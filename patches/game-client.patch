@@ -120,7 +120,7 @@ index 97a108b..894f580 100644
  import { LoadoutButton } from './loadout.js';
 -import { net } from '../net.js';
 +import { net, resolveServerTarget, toHttpUrl } from '../net.js';
- import { store, useStore, shallowEqual, emptyMatch } from '../store.js';
+ import { store, useStore, shallowEqual, emptyMatch, isSpectating } from '../store.js';
 @@ -62,6 +62,7 @@ export function roomFacts(room, myId) {
  
 -/** Invite link for a room code (current page URL with ?room=CODE). */

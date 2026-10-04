@@ -98,7 +98,7 @@ describe('unified diff applier', () => {
     const files = parsePatch(readFileSync(path.join(ROOT, 'patches', 'game-client.patch'), 'utf8'));
     assert.equal(files.length, 3);
     assert.deepEqual(files.map((f) => stripPath(f.newPath, 2)).sort(), [...PATCHED_FILES].sort());
-    assert.equal(files.reduce((n, f) => n + f.hunks.length, 0), 6);
+    assert.equal(files.reduce((n, f) => n + f.hunks.length, 0), 7);
   });
 
   test('applies a patch, and refuses to apply it where the context no longer matches', () => {
@@ -398,6 +398,101 @@ describe('desktop shell: a stable loopback origin keeps localStorage', () => {
     } finally {
       await served?.close();
       await new Promise((resolve) => blocker.server.close(resolve));
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('the /media alias resolves to the real audio file (the desktop shell has no server/index.js)', async () => {
+    const { createStaticServer, MEDIA_PREFIX, AUDIO_EXTS } = await import('../desktop/serve.mjs');
+    assert.equal(MEDIA_PREFIX, '/media/');
+    // The game rewrites audio URLs to this alias (public/js/media.js) using the list in shared/media.js; only
+    // server/index.js used to resolve it back, so every BGM 404'd in the packaged client until serve.mjs did too.
+    if (GAME_ROOT) {
+      const shared = readFileSync(path.join(GAME_ROOT, 'shared', 'media.js'), 'utf8');
+      const line = /export const AUDIO_EXTS = Object\.freeze\(\[([^\]]*)\]\)/.exec(shared);
+      assert.ok(line, 'shared/media.js still defines AUDIO_EXTS');
+      assert.deepEqual(AUDIO_EXTS.slice(), line[1].split(',').map((s) => s.trim().replace(/^'|'$/g, '')),
+        'serve.mjs must try exactly the extensions the client rewrites with');
+      assert.match(shared, new RegExp(`MEDIA_PREFIX = '${MEDIA_PREFIX}'`.replace(/[/.]/g, (c) => `\\${c}`)));
+    }
+
+    const root = mkdtempSync(path.join(tmpdir(), 'sp-media-'));
+    writeFileSync(path.join(root, 'index.html'), HTML);
+    mkdirSync(path.join(root, 'assets', 'audio', 'bgm'), { recursive: true });
+    mkdirSync(path.join(root, 'assets', 'audio', 'sfx'), { recursive: true });
+    writeFileSync(path.join(root, 'assets', 'audio', 'bgm', 'act1.mp3'), 'MP3MP3MP3');
+    writeFileSync(path.join(root, 'assets', 'audio', 'sfx', 'hit.m4a'), 'M4A');
+
+    const get = async (urlPath) => new Promise((resolve, reject) => {
+      http.get(urlPath.startsWith('http') ? urlPath : `${served.url}${urlPath}`, (r) => {
+        let d = Buffer.alloc(0);
+        r.on('data', (c) => { d = Buffer.concat([d, c]); });
+        r.on('end', () => resolve({ status: r.statusCode, type: r.headers['content-type'], body: d.toString(), range: r.headers['content-range'] }));
+      }).on('error', reject);
+    });
+
+    let served;
+    try {
+      served = await createStaticServer({ root, port: 0, log: { warn() {}, error() {} } });
+
+      const alias = await get('/media/bgm/act1');
+      assert.equal(alias.status, 200, 'the extension-less alias is served, not 404');
+      assert.equal(alias.type, 'audio/mpeg', 'Content-Type comes from the resolved file');
+      assert.equal(alias.body, 'MP3MP3MP3');
+
+      const withExt = await get('/media/bgm/act1.mp3');
+      assert.equal(withExt.status, 200, 'an already-suffixed alias still resolves');
+
+      const otherExt = await get('/media/sfx/hit');
+      assert.equal(otherExt.status, 200, 'a second entry in AUDIO_EXTS (.m4a) is tried too');
+      assert.equal(otherExt.body, 'M4A');
+
+      const missing = await get('/media/bgm/nope');
+      assert.equal(missing.status, 404, 'an unknown track is a clean 404, not a directory guess');
+
+      // Web Audio/BGM seeking asks for ranges, so the alias must keep the file server's Range support.
+      const ranged = await new Promise((resolve, reject) => {
+        const req = http.get(`${served.url}/media/bgm/act1`, { headers: { range: 'bytes=0-2' } }, (r) => {
+          let d = '';
+          r.on('data', (c) => { d += c; });
+          r.on('end', () => resolve({ status: r.statusCode, range: r.headers['content-range'], body: d }));
+        });
+        req.on('error', reject);
+      });
+      assert.equal(ranged.status, 206);
+      assert.equal(ranged.range, 'bytes 0-2/9');
+      assert.equal(ranged.body, 'MP3');
+
+      const direct = await get('/assets/audio/bgm/act1.mp3');
+      assert.equal(direct.status, 200, 'the direct path still works (the fallback for plain static hosts)');
+
+      // A browser/HTTP client normalizes `%2e%2e` and `..` out of a URL before sending it, so a traversal probe has to
+      // be written to the socket verbatim — that is what reaches the server's own decode guard.
+      const getRaw = (pathName) => new Promise((resolve, reject) => {
+        const req = http.request({ host: '127.0.0.1', port: served.port, path: pathName }, (r) => {
+          let d = '';
+          r.on('data', (c) => { d += c; });
+          r.on('end', () => resolve(r.statusCode));
+        });
+        req.on('error', reject);
+        req.end();
+      });
+
+      // Statuses mirror server/index.js serveMedia: '.' / '..' segments are 403 (forbidden), a dot-led or dot-ended
+      // segment, an empty stem and a trailing slash are 404 (not found).
+      const denied = [
+        ['/media/', 404],
+        ['/media/bgm/', 404],
+        ['/media/act1.', 404],
+        ['/media/../index.html', 403],
+        ['/media/%2e%2e/index.html', 403],
+      ];
+      for (const [bad, want] of denied) {
+        assert.equal((await getRaw(bad)), want, `${bad} must answer ${want}`);
+      }
+      assert.ok(AUDIO_EXTS.includes('.mp3') && AUDIO_EXTS.length >= 4);
+    } finally {
+      await served?.close();
       rmSync(root, { recursive: true, force: true });
     }
   });

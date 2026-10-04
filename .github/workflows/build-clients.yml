@@ -202,6 +202,16 @@ jobs:
       - name: 装 Capacitor 依赖
         run: cd mobile && npm install
 
+      - name: Android 关闭 /media 别名（Capacitor 是纯静态宿主，解不了它）
+        run: |
+          set -euo pipefail
+          F=build/client/www/js/runtime-config.js
+          test -f "$F" || { echo "缺 $F"; exit 1; }
+          grep -q "runtime-config" "$F" || true
+          printf '\n// Capacitor serves www/ as plain static files, so the extension-less /media/… alias would 404\n// and every BGM/sfx would be silent. Keep the direct /assets/audio/… URLs (public/js/media.js gates on this).\nglobalThis.__SP_MEDIA_ALIAS__ = false;\n' >> "$F"
+          grep -q "__SP_MEDIA_ALIAS__ = false" "$F" || { echo "flag 没写进去"; exit 1; }
+          echo "android: /media alias disabled"
+
       - name: 同步 web 资源到 Android 工程
         run: cd mobile && npx cap sync android
 

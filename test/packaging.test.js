@@ -519,3 +519,25 @@ describe('desktop shell: a stable loopback origin keeps localStorage', () => {
     }
   });
 });
+
+describe('audio: each host gets the URL form it can actually serve', () => {
+  // /media/<track> (extension-less, to keep download managers off BGM) is resolved by server/index.js on the web and
+  // by desktop/serve.mjs in the desktop shell — but Capacitor only serves www/ as plain files, so on Android that
+  // alias is a guaranteed 404 and the whole game would play silent. public/js/media.js gates on
+  // __SP_MEDIA_ALIAS__; these assertions keep the two jobs honest (a missing flag = a silent APK, which no test
+  // could otherwise see).
+  const wf = readFileSync(path.join(ROOT, '.github', 'workflows', 'build-clients.yml'), 'utf8');
+  const desktopJob = wf.slice(wf.indexOf('  desktop:'), wf.indexOf('  android:'));
+  const androidJob = wf.slice(wf.indexOf('  android:'));
+
+  test('the Android job turns the alias off, before cap sync copies www/', () => {
+    assert.match(androidJob, /__SP_MEDIA_ALIAS__ = false/, 'Android must disable the alias');
+    assert.ok(androidJob.indexOf('__SP_MEDIA_ALIAS__ = false') < androidJob.indexOf('cap sync android'),
+      'the flag has to be in the payload before Capacitor copies it');
+  });
+
+  test('the desktop job leaves it on (serve.mjs resolves /media)', () => {
+    assert.ok(!desktopJob.includes('__SP_MEDIA_ALIAS__ = false'), 'desktop keeps the alias');
+    assert.ok(desktopJob.includes('stronghold-desktop-win'), 'sanity: this is the desktop job slice');
+  });
+});

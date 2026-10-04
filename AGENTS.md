@@ -1,0 +1,90 @@
+# AGENTS.md — 给 AI 的开发说明书（本仓库 = Stronghold 客户端打包壳）
+
+本项目**完全由 AI 开发**。因此这里的每条约定都必须**可执行、可验证**：不写"通常/大概/应该"，
+只写命令能证伪的事实。改代码前先读这份，改完必须让下面的闸门真的跑过。
+
+## 1. 三个仓库，职责不重叠
+
+| 仓库 | 角色 | 硬约束 |
+|---|---|---|
+| `sganggs/Stronghold-Protocol`（游戏本体，GPL-3.0） | 游戏代码/数据 | **本仓库永不修改它**。`docs/PACKAGING.md:375` |
+| 本仓库 `lilyco-42/StrongholdProtocolClient` | 壳 + 打包 + CI | 只放壳、补丁、payload 流程 |
+| `lilyco-42/lain42-stronghold-ops` | 线上运维改动集 | 服务器侧改动记在这里 |
+
+对游戏仓库只有 `pull` 权限 → 改动走 **fork + PR**（`gh repo fork` → 推分支 → PR）。
+
+## 2. 线上是不可动的（真实代价）
+
+- `systemctl restart stronghold` = **杀掉所有进行中的对局**（房间在单进程内存里；晚高峰实测 ~281 人 / 162 场）。
+- `pingap` reload 只断线 1–3 秒，对局不丢。**别把两者混为一谈。**
+- `public/`、`data/`、`pages/` 是**从磁盘直读**的，改一行立刻打到在线玩家。
+- `dl.lain42.top/downloads/stronghold-protocol/**` 是**线上网页正在用的素材源**（`data/assets.json` 被
+  运维改成 OSS 绝对地址）。CI 默认 payload 就在那儿 —— **不要覆盖**，新版本 payload 发到自己仓库的 Release。
+
+## 3. 构建流程（顺序不能换，也不许本地编译）
+
+```bash
+# 1) 生成 payload（在素材齐全的游戏 checkout 上；只有这一步在本机/服务器做）
+node tools/package-client.mjs --server sp.lain42.top --game <游戏仓库checkout> --out <dir>
+#    → build.json 记录 game.app / commit / dirty；素材来自 git（不进 repo）需 `npm run assets`
+tar -czf payload.tar.gz -C <dir> .            # 布局：./index.html ./js ./assets …（CI 直接 tar -xzf）
+
+# 2) 发布 payload（自己的仓库，公开资产，CI 才能匿名 302 拉取；draft 会 403）
+gh release create payload-<ver> <tar.gz> --repo lilyco-42/StrongholdProtocolClient --title … --notes …
+
+# 3) 出 Windows + Android（**只能在 GitHub Actions**，不在本机）
+gh workflow run build-clients.yml -f payload_url=<release 资产 URL> -f expect_app=<ver>
+```
+
+`build-clients.yml` 的两个校验步骤是**闸门**，不是装饰：
+`assets` 文件数 > 3000，以及 `expect_app` 必须等于 payload 的 `game.app`。
+**没有第二条闸门时，CI 会绿着发布旧 payload**（0.1.1 就这么混出去过两次，见 `docs/BUILD-CI.md`）。
+
+## 4. `patches/game-client.patch`：漂移会大声失败，这是设计
+
+补丁只放**打包特有部分**（服务器地址注入、短屏 HUD 缩放、邀请链接指向远程站）；游戏行为一律提上游 PR。
+
+上游一改 `public/index.html` / `js/net.js` / `js/screens/room.js`，`package-client.mjs` 就会抛
+`hunk @@ -N,M @@ does not match`。正确修法是**改那一条上下文**，别放宽匹配。
+
+改完必须同步这三处，否则数字会互相说谎：
+
+| 位置 | 内容 |
+|---|---|
+| `test/packaging.test.js` `files.length` | 被打补丁的文件数（现 3） |
+| `test/packaging.test.js` hunk 总数 | 现 7（`index.html` 2 + `net.js` 3 + `room.js` 2） |
+| `docs/PACKAGING.md` "N 个文件、N 个 hunk" | 同上 |
+
+## 5. 跨版本兼容：唯一信号是 `/healthz.app`
+
+`PROTOCOL_VERSION` **不能**区分版本（0.1.1 和 0.1.3 都是 `1`，上游没升它）。实测：
+
+- 版本只在 `GET /healthz` → `{app, protocol, …}`；`server/index.js:665`
+- 服务器**没有**在 socket 的 welcome 里回传版本
+- 旧服务器遇到新动词回：`{t:'error', code:'BAD_MSG', detail:'unknown type <verb>'}`
+  （`server/net.js:588` 在协议表层就拦下；`server/lobby.js:296` 的 `unhandled type` 只有"表里有、switch 没接"才走得到。
+  两个形状都要认 —— 只写后者会让整条学习路径静默失效，我踩过。）
+- `/healthz` 的 URL 从**生效的 ws 地址**推导：页面源 == 服务器源 → 相对 `/healthz`；打包客户端（页面在
+  `127.0.0.1:47821`，socket 在远程）→ 绝对地址。写死相对路径会让 exe/apk 里的 `buildGuard` 永远 404。
+- 读不到（自建服没 CORS）= **unknown，一律乐观放行**，禁止把功能锁死；真正的权威是服务器那次拒绝本身。
+
+## 6. 只有这些算证据（写结论时按此措辞）
+
+1. `gh run view <id> --json conclusion` —— **不是** `gh run watch` 的 shell 退出码（末尾命令是 `tail` 时退出码毫无意义，踩过两次）。
+2. 产物必须**下载拆开再看**：`unzip -p … resources/app.asar | grep -c <函数名>`、读 `resources/www/build.json`。
+3. 界面行为要在真实页面里点出来（`document.querySelector('.join-spectate').disabled`），
+   并**排除混淆变量**：观战按钮的表达式是 `!codeOk || !online || spectateBlocked`，密钥框空着时它本来就是灰的 ——
+   我曾据此报过一次假阳性。
+4. 任何状态里提到的文件名/分支/run 号，上面必须有一条命令的输出压着它。没有就先跑。
+5. `node --test` 的通过数要写实际数字（游戏仓库全量当前 3626 项 / 0 失败 / 16 跳过）。
+
+## 7. 已知未修（别当成已解决）
+
+- 打包 `index.html` 仍引 **Google Fonts**（`fonts.googleapis.com` + `gstatic`，实测 16 个外部请求）；
+  中文正文 Noto Sans SC **只有 Google 那一份**，本地 `fonts.css` 只有 Bender / Novecento（拉丁）。
+  剪掉外链会让中文落到系统字体 —— 属于观感改动，需产品决定，不许顺手做。
+- Android 侧 `/media/…` 音频路由：`desktop/serve.mjs` 已实现 `resolveMediaPath`，
+  Capacitor 那份静态资源**还没有**等价机制，所以 APK 的 BGM 仍需单独处理。
+- 大厅平台（另一套 Flask 服务，不在本仓库）：注册 400（`site.json` 与 `SKIP_EMAIL_VERIFY` 环境变量不一致）、
+  库里 0 房间 / 1 用户、没有"从大厅选房→进游戏"的交接、商店在卖聊天发不出的 `表情包套装`。
+- Actions artifact 只保 **7 天**；长期分发要另发 Release。

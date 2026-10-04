@@ -255,7 +255,7 @@ node scripts/notice.mjs --clear        # 撤回
 |---|---|
 | `client.config.json` | `gameRoot`（默认 `../Stronghold-Protocol`）与 `defaultServer` |
 | `tools/game-contract.mjs` | 复制了游戏仓库的 `DATA_SHIM_JS` 与 `SIM_PRIVATE`（这样构建不需要在游戏仓库里 `npm install`）；每次构建都对照 `server/index.js` 校验，不一致直接报错 |
-| `patches/game-client.patch` | 打在 payload 上的客户端改动（3 个文件、6 个 hunk，§1.2、§6）。它是 `git diff` 出来的普通补丁，由 `tools/unified-diff.mjs` 应用（不依赖 git）；**上游改了这个文件里的任一文件 → 补丁对不上 → 构建失败**，此时需要重新生成补丁 |
+| `patches/game-client.patch` | 打在 payload 上的客户端改动（3 个文件、7 个 hunk，§1.2、§6）。它是 `git diff` 出来的普通补丁，由 `tools/unified-diff.mjs` 应用（不依赖 git）；**上游改了这个文件里的任一文件 → 补丁对不上 → 构建失败**，此时需要重新生成补丁 |
 | `build/client/manifest.json`、payload 里的 `build.json` | 记录这次构建基于的游戏版本：`git describe` + commit + `PROTOCOL_VERSION` |
 
 | | 打包进去什么 |

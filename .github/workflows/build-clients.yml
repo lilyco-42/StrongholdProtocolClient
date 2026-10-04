@@ -23,6 +23,10 @@ on:
         description: '校验用：payload 内 runtime-config.js 应当指向的服务器'
         required: false
         default: 'sp.lain42.top'
+      expect_app:
+        description: '闸门：payload 内 build.json 的 game.app 必须等于此值；留空则要求等于本仓库 package.json 的 version'
+        required: false
+        default: ''
   push:
     tags:
       - 'v*'
@@ -69,6 +73,26 @@ jobs:
           cat build/client/www/js/runtime-config.js
           echo "--- build.json ---"
           cat build/client/www/build.json
+
+      # 没有这一步，payload 停在旧版本时 CI 照样绿：exe/apk 会静默带着旧游戏代码发布（0.1.1 就是这么出门的）。
+      - name: 校验 payload 版本（闸门）
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECT="${{ github.event.inputs.expect_app }}"
+          WANT_SERVER="${{ github.event.inputs.server }}"
+          REPO=$(node -e 'console.log(require("./package.json").version)')
+          APP=$(node -e 'console.log(require("./build/client/www/build.json").game.app)')
+          GOT_SERVER=$(node -e 'console.log(require("./build/client/www/build.json").server)')
+          echo "payload: game.app=$APP server=$GOT_SERVER ；本仓库 version=$REPO"
+          if [ -n "$EXPECT" ]; then
+            [ "$APP" = "$EXPECT" ] || { echo "闸门：要求 expect_app=$EXPECT，payload 实为 $APP"; exit 1; }
+          else
+            [ "$APP" = "$REPO" ] || { echo "闸门：payload 是 $APP，本仓库已对齐 $REPO —— 换 payload，或传 expect_app=$APP 明确接受"; exit 1; }
+          fi
+          if [ -n "$WANT_SERVER" ]; then
+            [ "$GOT_SERVER" = "$WANT_SERVER" ] || { echo "闸门：要求 server=$WANT_SERVER，payload 实为 $GOT_SERVER"; exit 1; }
+          fi
 
       - name: 装 Electron 依赖
         run: cd desktop && npm install
@@ -153,6 +177,27 @@ jobs:
           ASSETS=$(find build/client/www/assets -type f 2>/dev/null | wc -l)
           echo "素材文件数: $ASSETS"
           test "$ASSETS" -gt 3000 || { echo "素材不完整（只有 $ASSETS 个）"; exit 1; }
+          echo "--- build.json ---"
+          cat build/client/www/build.json
+
+      # 与桌面 job 同一道闸门（旧 payload 会静默出门，见 desktop job 的注释）。
+      - name: 校验 payload 版本（闸门）
+        run: |
+          set -euo pipefail
+          EXPECT="${{ github.event.inputs.expect_app }}"
+          WANT_SERVER="${{ github.event.inputs.server }}"
+          REPO=$(node -e 'console.log(require("./package.json").version)')
+          APP=$(node -e 'console.log(require("./build/client/www/build.json").game.app)')
+          GOT_SERVER=$(node -e 'console.log(require("./build/client/www/build.json").server)')
+          echo "payload: game.app=$APP server=$GOT_SERVER ；本仓库 version=$REPO"
+          if [ -n "$EXPECT" ]; then
+            [ "$APP" = "$EXPECT" ] || { echo "闸门：要求 expect_app=$EXPECT，payload 实为 $APP"; exit 1; }
+          else
+            [ "$APP" = "$REPO" ] || { echo "闸门：payload 是 $APP，本仓库已对齐 $REPO —— 换 payload，或传 expect_app=$APP 明确接受"; exit 1; }
+          fi
+          if [ -n "$WANT_SERVER" ]; then
+            [ "$GOT_SERVER" = "$WANT_SERVER" ] || { echo "闸门：要求 server=$WANT_SERVER，payload 实为 $GOT_SERVER"; exit 1; }
+          fi
 
       - name: 装 Capacitor 依赖
         run: cd mobile && npm install

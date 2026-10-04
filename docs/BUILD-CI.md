@@ -1,5 +1,48 @@
 # 用 GitHub Actions 出桌面版 / Android 版
 
+## ✅ 验证结果（2026-10-04，run 37204756625）
+
+两个 job 全部成功，产物已下载校验：
+
+| 产物 | 大小 | 校验 |
+|---|---|---|
+| `stronghold-desktop-win` | **315.6 MB** | 4994 条目；`StrongholdProtocol.exe` ✓；`resources/app.asar` ✓；**4972 个内嵌 web 资源** ✓ |
+| `stronghold-android-apk` | **193.0 MB** | 4634 条目；`AndroidManifest.xml` / `classes.dex` / `resources.arsc` ✓；**4196 个内嵌 web 资源** ✓ |
+
+两者的 `runtime-config.js` 都是 `globalThis.__SP_SERVER__ = "sp.lain42.top"` ✓
+
+**注意：客户端的 `index.html` 里是 `/js/main.js`（本地路径），不是 OSS 地址。**
+这是**正确的** —— 客户端把全部资源内嵌（4972 / 4196 个文件），
+**完全不依赖 OSS**，离线也能跑。服务器上那份 index.html 才指向 OSS。
+
+### 过程中修掉的 CI 问题
+
+`android-actions/setup-android@v3` 会去装**早已从 SDK 仓库下架的 legacy `tools` 包**，
+报 `Warning: Failed to find package 'tools'` 然后 exit 1，整条 job 直接挂。
+
+**修法：弃用这个 action，改用 ubuntu-latest 预装的 SDK。**
+
+```yaml
+- name: 安装 Android SDK 组件
+  run: |
+    set -euo pipefail
+    SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+    SDKMANAGER=$(find "$SDK/cmdline-tools" -maxdepth 3 -name sdkmanager -type f | sort | tail -1)
+    echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+    echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+    echo "$(dirname "$SDKMANAGER")" >> "$GITHUB_PATH"
+    yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+    "$SDKMANAGER" --install "platforms;android-36" "build-tools;36.0.0" "platform-tools"
+```
+
+要点：**动态定位 `sdkmanager`**（不同 runner 镜像的版本目录名不一样，如 `16.0` / `latest`），
+并**显式把 `ANDROID_HOME` 写进 `$GITHUB_ENV`** 供 gradle 使用。
+
+### ⚠️ 产物有效期
+
+GitHub Actions artifact 默认保留 **7 天**。要长期保存需另传（OSS / Release）。
+
+
 本文说明 `lilyco-42/StrongholdProtocolClient` 这条构建链：**payload 在服务器上本地生成 → 传 OSS → CI 只负责打包成 exe / apk**。
 
 ## 为什么不把 payload 生成放进 CI

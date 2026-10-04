@@ -2,42 +2,29 @@ diff --git a/public/index.html b/public/index.html
 index 82a085e..360d735 100644
 --- a/public/index.html
 +++ b/public/index.html
-@@ -40,6 +40,8 @@
-   <link rel="stylesheet" href="/css/screens/loadout.css" />
-   <link rel="stylesheet" href="/css/emotes.css" />
+@@ -42,2 +42,4 @@
    <link rel="stylesheet" href="/css/devices.css" />
 +  <!-- Packaged clients: HUD scale on short landscape screens (see shell/display.css). -->
 +  <link rel="stylesheet" href="/css/shell-display.css" />
  
-   <script type="importmap">
-     { "imports": { "preact": "/vendor/preact.module.js", "preact/hooks": "/vendor/hooks.module.js", "htm": "/vendor/htm.module.js" } }
-@@ -93,6 +95,9 @@
-       if (/specifier|resolve|import|module/i.test(String(ev && ev.message))) window.__spBootFail('load');
-     });
+@@ -95,2 +97,5 @@
    </script>
 +  <!-- Packaged-client server address (empty in the web build → the page's own origin). Must run before /js/main.js. -->
 +  <script src="/js/runtime-config.js"></script>
 +  <script type="module" src="/js/shell/picker.js"></script>
    <script type="module" src="/js/main.js" onerror="window.__spBootFail && window.__spBootFail('load')"></script>
-   <script nomodule>window.__spBootFail && window.__spBootFail('old');</script>
-   <script>
 diff --git a/public/js/net.js b/public/js/net.js
 index ce2d362..b9afbf8 100644
 --- a/public/js/net.js
 +++ b/public/js/net.js
-@@ -1,6 +1,8 @@
- // WebSocket client for the game server (DESIGN §8).
+@@ -2,3 +2,5 @@
  //
 -// - One socket at ws(s)://<host>/ws, JSON text frames `{ t, ...payload }`.
 +// - One socket at ws(s)://<host>/ws, JSON text frames `{ t, ...payload }`. The host is the page's own origin
 +//   unless the client is packaged (Electron / Android): `/js/runtime-config.js` then sets `globalThis.__SP_SERVER__`
 +//   to the game server it was built for (default `localhost:3000`), and `?server=host` overrides it for one session.
  // - Auto-reconnect with exponential backoff + jitter; a heartbeat (`ping`) measures latency and
- //   detects dead sockets (a ping left unanswered — no inbound frame at all — for DEAD_AFTER_MS ⇒
- //   close ⇒ reconnect). Measured from the oldest unanswered ping, not from the last inbound frame,
-@@ -92,11 +94,89 @@ export function backoffDelay(attempt, rand = Math.random) {
- }
- 
+@@ -94,4 +96,80 @@ export function backoffDelay(attempt, rand = Math.random) {
  /**
 - * WebSocket URL for the current page (`ws(s)://host/ws`).
 - * @param {{protocol: string, host: string}} [loc]
@@ -120,29 +107,21 @@ index ce2d362..b9afbf8 100644
 + * WebSocket URL for the current page (`ws(s)://host/ws`), honouring the packaged-client server override.
 + * @param {{protocol: string, host: string, search?: string}} [loc]
   * @returns {string}
-  */
+@@ -99,2 +177,4 @@ export function backoffDelay(attempt, rand = Math.random) {
  export function defaultWsUrl(loc = globalThis.location) {
 +  const target = resolveServerTarget(loc);
 +  if (target) return toWsUrl(target);
    if (!loc || !loc.host) return 'ws://localhost:3000/ws';
-   return `${loc.protocol === 'https:' ? 'wss' : 'ws'}://${loc.host}/ws`;
- }
 diff --git a/public/js/screens/room.js b/public/js/screens/room.js
-index 60c3de9..62d5fce 100644
+index 97a108b..894f580 100644
 --- a/public/js/screens/room.js
 +++ b/public/js/screens/room.js
-@@ -16,7 +16,7 @@ import { toast, toastError } from '../ui/toasts.js';
- import { copyText } from '../ui/clipboard.js';
- import { GuideButton } from '../ui/guide.js';
+@@ -17,3 +17,3 @@ import { GuideButton } from '../ui/guide.js';
  import { LoadoutButton } from './loadout.js';
 -import { net } from '../net.js';
 +import { net, resolveServerTarget, toHttpUrl } from '../net.js';
  import { store, useStore, shallowEqual, emptyMatch } from '../store.js';
- import { difficultyInfo } from './lobby.js';
- 
-@@ -61,10 +61,11 @@ export function roomFacts(room, myId) {
-   };
- }
+@@ -62,6 +62,7 @@ export function roomFacts(room, myId) {
  
 -/** Invite link for a room code (current page URL with ?room=CODE). */
 +/** Invite link for a room code: the web client's URL with `?room=CODE` (the remote site in a packaged client). */
@@ -152,5 +131,3 @@ index 60c3de9..62d5fce 100644
 +  const target = resolveServerTarget(loc);
 +  const base = target ? `${toHttpUrl(target)}/` : (loc ? `${loc.origin}${loc.pathname}` : '');
    return `${base}?room=${encodeURIComponent(code)}`;
- }
- 

@@ -68,6 +68,51 @@ const LONG_CACHE_DIRS = new Set(['assets', 'fonts', 'vendor']);
 const LONG_CACHE = 'public, max-age=86400';
 const NO_CACHE = 'no-cache';
 
+/** The extension-less audio alias and the extensions it may resolve to (`shared/media.js`, served by server/index.js). */
+export const MEDIA_PREFIX = '/media/';
+export const AUDIO_EXTS = Object.freeze(['.mp3', '.m4a', '.aac', '.ogg', '.oga', '.opus', '.wav']);
+/** Where the real audio files live in the flattened payload. */
+const AUDIO_ROOT_SEGMENTS = ['assets', 'audio'];
+
+/**
+ * `/media/bgm/act1` → `<root>/assets/audio/bgm/act1.mp3`.
+ *
+ * `public/js/media.js` rewrites every audio URL to this extension-less form so download managers (IDM / 迅雷) don't
+ * grab each BGM, and only `server/index.js` knew how to resolve it back. The packaged shell is the only other host
+ * of these files, so it has to answer the alias too — otherwise the desktop client plays nothing.
+ *
+ * @param {string} root absolute payload root
+ * @param {string} rawUrl e.g. `/media/bgm/act1?v=3`
+ * @returns {Promise<string|null>} absolute file path, or null when the request is not a media alias / matches nothing
+ */
+export async function resolveMediaPath(root, rawUrl) {
+  const q = rawUrl.indexOf('?');
+  let decoded;
+  try { decoded = decodeURIComponent(q === -1 ? rawUrl : rawUrl.slice(0, q)); } catch { return null; }
+  if (!decoded.startsWith(MEDIA_PREFIX)) return null;
+
+  const rest = decoded.slice(MEDIA_PREFIX.length);
+  const segments = rest.split('/').filter((s) => s.length > 0);
+  // A trailing slash or an empty stem addresses a directory, and a dot-led/-ended segment could address something else.
+  if (!segments.length || rest.endsWith('/')) return null;
+  if (segments.some((s) => s === '..' || s === '.' || s.startsWith('.') || s.endsWith('.'))) return null;
+
+  const last = segments[segments.length - 1];
+  const given = AUDIO_EXTS.find((e) => last.toLowerCase().endsWith(e)) || '';
+  const stem = given ? last.slice(0, -given.length) : last;
+  if (!stem) return null;
+
+  const audioRoot = path.join(root, ...AUDIO_ROOT_SEGMENTS);
+  const dir = path.join(audioRoot, ...segments.slice(0, -1));
+  if (dir !== audioRoot && !dir.startsWith(audioRoot + path.sep)) return null;
+
+  for (const ext of (given ? [given] : AUDIO_EXTS)) {
+    const candidate = path.join(dir, stem + ext);
+    try { if ((await fsp.stat(candidate)).isFile()) return candidate; } catch { /* try the next extension */ }
+  }
+  return null;
+}
+
 /** @param {string} ext @param {string[]} segments */
 export function cacheControlFor(ext, segments) {
   if (ext === '.html' || ext === '.htm') return NO_CACHE;
@@ -132,7 +177,16 @@ export function createStaticServer({ root, host = '127.0.0.1', port = 0, log = c
     const target = resolveTarget(rootAbs, req.url || '/');
     if (!target) { finish(req, res, 403, { 'Content-Type': 'text/plain; charset=utf-8' }, 'forbidden'); return; }
 
-    let absPath = target;
+    // `/media/…` never names a real directory — resolve it to the audio file it aliases, and 404 on a miss
+    // instead of falling through to a `<root>/media/…` lookup.
+    let absPath = await resolveMediaPath(rootAbs, req.url || '/');
+    if (!absPath) {
+      if ((req.url || '').split('?')[0].startsWith(MEDIA_PREFIX)) {
+        finish(req, res, 404, { 'Content-Type': 'text/plain; charset=utf-8' }, 'not found');
+        return;
+      }
+      absPath = target;
+    }
     let stat;
     try {
       stat = await fsp.stat(absPath);

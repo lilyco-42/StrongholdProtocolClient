@@ -107,7 +107,7 @@ gh workflow run build-clients.yml -f payload_url=<release 资产 URL> -f expect_
 | **待发布的 payload**（含字体镜像） | 本机 `D:/Code/_artifacts/sp-client-payload-0.1.3-c8.tar.gz`：**218,916,336 B**，sha256 `d31f7d3c8f8b357f9d285d843dd20b694cd37a9b66ac70d3a3911ae7996caa04`，游戏代码 `v0.1.3-8-g86719d1`（4366 个文件 / 293.0 MB，含 `webfonts/google/` 114 条目）。**尚未上传**，上传与 `gh workflow run` 需要人点头 | `node tools/check-payload-offline.mjs D:/Code/_artifacts/payload-c8`（727 个文本文件、112 woff2、0 问题）；`tar -xOf … ./build.json` 读 `game.describe` |
 | 线上服务器 | 仍是 **0.1.1**（`/healthz` 的 `app`），未重启、未改动 | `systemctl show stronghold -p ExecMainStartTimestamp` 应仍是 2026-10-04 20:03:41 |
 
-产物内必须能查到这三样（每次发布都重验，别沿用旧结论）：`app.asar` 里 `resolveMediaPath` ≥1；payload `js/net.js` 里 `serverKey`；APK 内 `assets/public/js/runtime-config.js` 含 `__SP_MEDIA_ALIAS__ = false`（桌面那份必须**没有**）。
+CI 现在有四道闸门：payload 完整性、`expect_app` 版本、`零外部依赖（闸门）`（暂存 payload）、`零外部依赖（产物内，闸门）`（出厂字节：桌面扫 `resources/www`，APK 用 `--zip` 按条目扫）。产物内必须能查到这三样（每次发布都重验，别沿用旧结论）：`app.asar` 里 `resolveMediaPath` ≥1；payload `js/net.js` 里 `serverKey`；APK 内 `assets/public/js/runtime-config.js` 含 `__SP_MEDIA_ALIAS__ = false`（桌面那份必须**没有**）。
 
 跨版本识别在生产上的实测（同一份产物）：连线上 0.1.1 → `serverApp='0.1.1'`、`probeFailed:false`，观战/移出成员/移出观战者三处 `ok:false reason:'older-server'`（点之前就识别到，因为生产 `/healthz` 有 CORS），`room.join` 仍 `ok:true`；连 0.1.3 → `确认本局信息` 正常开局。
 

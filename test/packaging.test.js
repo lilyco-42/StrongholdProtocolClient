@@ -466,6 +466,43 @@ describe('desktop shell: a stable loopback origin keeps localStorage', () => {
     }
   });
 
+  test('the provenance gate accepts only a payload that traces to a commit (and CI runs it in both jobs)', async () => {
+    // Measured 2026-10-05: the workflow's DEFAULT payload_url (the OSS copy) carries build.json describe="v0.1.3-dirty",
+    // dirty=true. The version gate and the offline gate both pass it, so without this gate CI ships an exe/apk nobody
+    // can trace back to a commit — and the game side has no CI at all to fall back on.
+    const { checkProvenance, main } = await import('../tools/check-payload-provenance.mjs');
+    const clean = { server: 'sp.lain42.top', game: { app: '0.1.3', describe: 'v0.1.3-16-g603b94c', dirty: false } };
+    assert.equal(checkProvenance(clean).ok, true, '干净树上的 payload 必须放行');
+    const dirty = { server: 'sp.lain42.top', game: { app: '0.1.3', describe: 'v0.1.3-dirty', dirty: true } };
+    const d = checkProvenance(dirty);
+    assert.equal(d.ok, false);
+    assert.match(d.problems.join('\n'), /dirty/, '要说出是 dirty，否则没人知道为什么被拦');
+    assert.match(d.problems.join('\n'), /describe/, '还要说出 describe 追不到 commit');
+    // Two more shapes that must not pass: a tag exactly at HEAD (no -g<sha>) and a missing stamp.
+    assert.equal(checkProvenance({ game: { app: '0.1.3', describe: 'v0.1.3', dirty: false } }).ok, false);
+    assert.equal(checkProvenance({ game: { app: '0.1.3', dirty: false } }).ok, false);
+    assert.equal(checkProvenance({ game: { app: '0.1.2', describe: 'v0.1.2-1-gabcdef123', dirty: false } }, '0.1.3').ok, false);
+
+    // And the same object read off disk, when this machine still has the payload we intend to publish
+    // (set SP_PAYLOAD to point at a staged www dir; otherwise the two assertions below are skipped).
+    const c10 = process.env.SP_PAYLOAD || 'D:/Code/_artifacts/payload-c10';
+    if (existsSync(path.join(c10, 'build.json'))) {
+      assert.equal(main([c10]), 0, '待发布的 payload 必须过出处闸门');
+      assert.equal(main([c10, '--expect-app', '0.1.3']), 0);
+    }
+
+    const wf = readFileSync(path.join(ROOT, '.github', 'workflows', 'build-clients.yml'), 'utf8');
+    for (const name of ['desktop', 'android']) {
+      const job = wf.slice(wf.indexOf(`  ${name}:`));
+      const at = job.indexOf('check-payload-provenance.mjs build/client/www');
+      assert.ok(at > -1, `${name} job must run the provenance gate`);
+      assert.ok(at < job.indexOf('check-payload-offline.mjs build/client/www'),
+        `${name}: 出处闸门要在离线闸门之前 —— 拦下复现不出来的 payload 比看内容更省事`);
+      assert.ok(at < job.indexOf('npm run pack') || at < job.indexOf('cap sync android'),
+        `${name}: 出处闸门必须在真正开始打包之前`);
+    }
+  });
+
   test('the shell serves the mirrored font sheet the way a font host does (mime + long cache, and no escape)', async () => {
     // Why this test exists: the whole point of `public/webfonts/google/` is that the packaged client never talks to
     // fonts.googleapis.com / fonts.gstatic.com. `check-payload-offline.mjs` proves the bytes are IN the payload, but

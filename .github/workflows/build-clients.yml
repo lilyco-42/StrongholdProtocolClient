@@ -95,6 +95,11 @@ jobs:
           fi
 
       # 装机玩家可能在 LAN、飞机上、或根本连不上字体主机；payload 里出现第三方主机就是回归（旧产物确实带着它出门）。
+      # 版本号对得上不代表这份 payload 能追到提交：默认 payload_url 那份实测 describe="v0.1.3-dirty"。
+      - name: payload 出处（闸门）
+        shell: bash
+        run: node tools/check-payload-provenance.mjs build/client/www
+
       - name: 零外部依赖（闸门）
         shell: bash
         run: node tools/check-payload-offline.mjs build/client/www
@@ -210,6 +215,11 @@ jobs:
           fi
 
       # 装机玩家可能在 LAN、飞机上、或根本连不上字体主机；payload 里出现第三方主机就是回归（旧产物确实带着它出门）。
+      # 版本号对得上不代表这份 payload 能追到提交：默认 payload_url 那份实测 describe="v0.1.3-dirty"。
+      - name: payload 出处（闸门）
+        shell: bash
+        run: node tools/check-payload-provenance.mjs build/client/www
+
       - name: 零外部依赖（闸门）
         shell: bash
         run: node tools/check-payload-offline.mjs build/client/www

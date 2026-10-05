@@ -113,15 +113,20 @@ index ce2d362..b9afbf8 100644
 +  if (target) return toWsUrl(target);
    if (!loc || !loc.host) return 'ws://localhost:3000/ws';
 diff --git a/public/js/screens/room.js b/public/js/screens/room.js
-index 97a108b..894f580 100644
 --- a/public/js/screens/room.js
 +++ b/public/js/screens/room.js
-@@ -17,3 +17,3 @@ import { GuideButton } from '../ui/guide.js';
+@@ -19,7 +19,7 @@
+ import { copyText } from '../ui/clipboard.js';
+ import { GuideButton } from '../ui/guide.js';
  import { LoadoutButton } from './loadout.js';
 -import { net } from '../net.js';
 +import { net, resolveServerTarget, toHttpUrl } from '../net.js';
  import { store, useStore, shallowEqual, emptyMatch, isSpectating } from '../store.js';
-@@ -62,6 +62,7 @@ export function roomFacts(room, myId) {
+ import { difficultyInfo } from './lobby.js';
+ 
+@@ -67,10 +67,11 @@
+   };
+ }
  
 -/** Invite link for a room code (current page URL with ?room=CODE). */
 +/** Invite link for a room code: the web client's URL with `?room=CODE` (the remote site in a packaged client). */
@@ -131,3 +136,5 @@ index 97a108b..894f580 100644
 +  const target = resolveServerTarget(loc);
 +  const base = target ? `${toHttpUrl(target)}/` : (loc ? `${loc.origin}${loc.pathname}` : '');
    return `${base}?room=${encodeURIComponent(code)}`;
+ }
+ 

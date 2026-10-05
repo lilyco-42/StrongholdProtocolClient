@@ -725,3 +725,28 @@ describe('artifact-level offline gate (reads APK zip entries)', () => {
     }
   });
 });
+
+describe('the artifact gate points where the packagers actually put the bytes', () => {
+  // If these two derivations ever drift, the CI gate would either scan a nonexistent directory (loud, it exits 1)
+  // or, worse, stop matching the real shipped layout. The mapping lives in the packager configs, not in the workflow.
+  const wf = readFileSync(path.join(ROOT, '.github', 'workflows', 'build-clients.yml'), 'utf8');
+
+  test('electron-builder ships the payload as extraResources named www next to the asar', () => {
+    const b = JSON.parse(readFileSync(path.join(ROOT, 'desktop', 'package.json'), 'utf8')).build;
+    const extra = b.extraResources.find((r) => r.to === 'www');
+    assert.ok(extra, 'extraResources must map the payload to "www"');
+    assert.equal(extra.from.replace('../', ''), 'build/client/www', 'same staging dir the payload gate scans');
+    assert.equal(b.asar, true, 'asar covers only the shell files, so the www is NOT inside app.asar');
+    assert.ok(!b.files.includes('../build/client/www'), 'payload must not be in files[] (it would be in the asar then)');
+    const out = b.directories.output.replace('../', '');
+    const expected = `check-payload-offline.mjs ${out}/win-unpacked/resources/${extra.to}`;
+    assert.ok(wf.includes(expected), `workflow 里的产物闸门路径应当是 ${expected}`);
+  });
+
+  test('Capacitor copies webDir into the apk as assets/public', () => {
+    const cfg = JSON.parse(readFileSync(path.join(ROOT, 'mobile', 'capacitor.config.json'), 'utf8'));
+    assert.equal(cfg.webDir.replace(/^\.\.\//, ''), 'build/client/www', 'android webDir is the same staged payload');
+    assert.match(cfg.server.androidScheme, /^https$/, 'https scheme — the /media alias 404s here, hence the flag step');
+    assert.ok(wf.includes('check-payload-offline.mjs --zip'), 'android artifact gate must open the apk, not grep it');
+  });
+});

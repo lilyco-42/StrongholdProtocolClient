@@ -40,6 +40,8 @@ export const VERSION_JSON = Object.freeze(['package.json', 'desktop/package.json
 /** Lockfiles whose root + packages[""] version must follow (npm's own transitive entries never change). */
 export const VERSION_LOCKS = Object.freeze(['desktop/package-lock.json', 'mobile/package-lock.json']);
 const GRADLE = path.join('mobile', 'android', 'app', 'build.gradle');
+/** Xcode keeps its two version fields inside the project file (the Capacitor template hardcodes 1.0 / 1). */
+const PBXPROJ = path.join('mobile', 'ios', 'App', 'App.xcodeproj', 'project.pbxproj');
 
 /** Gradle's versionCode must be a monotonically rising integer; derive it from the semver (0.1.2 → 102). */
 export function versionCode(version) {
@@ -94,6 +96,16 @@ export function alignVersions(version) {
       .replace(/(\bversionCode\s+)\d+/, (m, a) => (code == null ? m : `${a}${code}`))
       .replace(/(\bversionName\s+")[^"]*(")/, `$1${version}$2`);
     if (writeIfChanged(gradle, next)) changed.push(GRADLE.split(path.sep).join('/'));
+  }
+  // iOS 的两个版本字段在 Xcode 工程里，模板写死 1.0 / 1 —— 不跟着对齐，iPhone 玩家在"设置 → 应用"里看到的版本
+  // 就和 exe/apk 不同号，报障时对不上。CURRENT_PROJECT_VERSION 用与 Gradle versionCode 同一个派生值。
+  const pbx = path.join(CLIENT_ROOT, PBXPROJ);
+  if (fs.existsSync(pbx)) {
+    const code = versionCode(version);
+    const next = fs.readFileSync(pbx, 'utf8')
+      .replace(/(\bMARKETING_VERSION = )[^;]+;/g, `$1${version};`)
+      .replace(/(\bCURRENT_PROJECT_VERSION = )[^;]+;/g, (m, a) => (code == null ? m : `${a}${code};`));
+    if (writeIfChanged(pbx, next)) changed.push(PBXPROJ.split(path.sep).join('/'));
   }
   return changed;
 }

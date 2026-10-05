@@ -19,6 +19,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { applyPatch, parsePatch, stripPath } from '../tools/unified-diff.mjs';
+import { versionCode } from '../tools/package-release.mjs';
 import { DATA_SHIM_JS, SIM_PRIVATE, findGameRoot, isGameRoot, readGameContract, verifyGameContract, readProtocolVersion } from '../tools/game-contract.mjs';
 import { PATCHED_FILES, applyPayloadPatch, assertPatched } from '../tools/payload-patches.mjs';
 import { assembleClient, runtimeConfigSource, DEFAULT_SERVER, CLIENT_ROOT, SHELL_FILES, parseCommonArgs } from '../tools/package-client.mjs';
@@ -957,6 +958,25 @@ describe('artifact-level offline gate (reads APK zip entries)', () => {
     for (const m of wf.matchAll(/\$\{?([A-Za-z_]\w*)\}?([^\x00-\x7F])/g)) {
       assert.equal(m[0][1], '{', `workflow 里 $${m[1]} 紧跟非 ASCII "${m[2]}" —— 改成 \${${m[1]}}（bash 3.2 会把它读成一个变量名）`);
     }
+  });
+
+  // 版本号的唯一真源是 package.json，四个地方要跟着它走（tools/package-release.mjs 的 alignVersions 负责写）。
+  // iOS 那两个字段是这次加进来的：Xcode 模板写死 1.0 / 1，不钉住就会和 exe/apk 不同号，玩家报障对不上。
+  test('every platform stamp agrees with package.json (and alignVersions is what keeps it that way)', () => {
+    const v = JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
+    const code = versionCode(v);
+    assert.ok(Number.isInteger(code) && code > 0, `versionCode(${v}) 应当派生出整数，实得 ${code}`);
+    for (const rel of ['package.json', 'desktop/package.json', 'mobile/package.json']) {
+      assert.equal(JSON.parse(readFileSync(path.join(ROOT, rel), 'utf8')).version, v, `${rel} 的版本与根不一致`);
+    }
+    const gradle = readFileSync(path.join(ROOT, 'mobile', 'android', 'app', 'build.gradle'), 'utf8');
+    assert.ok(gradle.includes(`versionName "${v}"`), `android versionName 不是 ${v}`);
+    assert.match(gradle, new RegExp(`\\bversionCode ${code}\\b`), `android versionCode 不是 ${code}`);
+    const pbx = readFileSync(path.join(ROOT, 'mobile', 'ios', 'App', 'App.xcodeproj', 'project.pbxproj'), 'utf8');
+    const marketing = [...pbx.matchAll(/\bMARKETING_VERSION = ([^;]+);/g)].map((m) => m[1]);
+    const build = [...pbx.matchAll(/\bCURRENT_PROJECT_VERSION = ([^;]+);/g)].map((m) => m[1]);
+    assert.ok(marketing.length >= 2 && marketing.every((x) => x === v), `iOS MARKETING_VERSION 是 ${marketing.join('/')}，应为 ${v}（Debug 与 Release 都要）`);
+    assert.ok(build.length >= 2 && build.every((x) => x === String(code)), `iOS CURRENT_PROJECT_VERSION 是 ${build.join('/')}，应为 ${code}`);
   });
 });
 

@@ -76,9 +76,9 @@ gh workflow run build-clients.yml -f payload_url=<release 资产 URL> -f expect_
    并**排除混淆变量**：观战按钮的表达式是 `!codeOk || !online || spectateBlocked`，密钥框空着时它本来就是灰的 ——
    我曾据此报过一次假阳性。
 4. 任何状态里提到的文件名/分支/run 号，上面必须有一条命令的输出压着它。没有就先跑。
-5. `node --test` 的通过数要写实际数字。游戏仓库全量当前 **3638 项 / 3621 过 / 16 跳过**（2026-10-05 15:21，合并上游 `bd892a4` 之后）：
-   并行整跑时唯一会红的是 `test/sim/robustness.test.js` 的 CPU 阈值闸（best-of-3 实测 0.52 ms/tick，阈值 0.5）；
-   单独跑该文件 **35/35 通过**（878–2024 ms），且本分支没碰 `server/sim/**`、也没改这个测试文件
+5. `node --test` 的通过数要写实际数字。游戏仓库全量当前 **3639 项 / 3621 过 / 2 失败 / 16 跳过**（2026-10-05 15:53，`6ea4a0e` = `v0.1.3-17-g6ea4a0e`）：
+   并行整跑时红的两条都是 CPU 阈值闸 —— `test/sim/perf.test.js:43` 与 `test/sim/robustness.test.js:739`（后者 best 1.5747 ms/tick，阈值 0.5）；
+   单独复跑分别是 **2/2** 与 **35/35 通过**，且本分支没碰 `server/sim/**`、也没改这两个测试文件
    （`git diff upstream/master..HEAD -- server/sim test/sim` 为空）—— 是本机负载，不是回归。
    ⚠️ 这条**没有 CI 可依赖**：游戏 fork 的 Actions 开关虽开，workflow 从未注册（runs 为 0、`gh workflow run ci.yml`
    报 "not found on the default branch"），所以游戏侧证据只有本机 `npm test`；细节见游戏仓库 `AGENTS.md` §5。
@@ -92,8 +92,14 @@ gh workflow run build-clients.yml -f payload_url=<release 资产 URL> -f expect_
   日志点名 `index.html` / `dev/uikit.html` 引用 `fonts.googleapis.com` 且缺 `webfonts/google/google.css`；
   换成新 payload 就是绿的。网页版那份 `index.html` 仍带外链 —— 2026-10-05 14:20 的覆盖式升级把线上换成了**上游 0.1.3** 的 index.html，
   我的镜像与 OSS 前端改写都不在那份文件里（运维仓库 `docs/12-prod-0.1.3-overlay.md`），要重放而不是直接编辑热文件。
-- Android 侧 `/media/…` 音频路由：`desktop/serve.mjs` 已实现 `resolveMediaPath`，
-  Capacitor 那份静态资源**还没有**等价机制，所以 APK 的 BGM 仍需单独处理。
+- Android 侧 `/media/…` 音频路由：已修好在**产物**层面 —— Capacitor 是纯静态宿主，解不了无扩展名的别名，
+  所以不给它补等价机制，而是让 `public/js/media.js` 的 `mediaAliasEnabled()` 在 `__SP_MEDIA_ALIAS__ === false` 时
+  直接保留 `/assets/audio/…` 真地址，Android job 在 `cap sync` 前把这行 flag 追加进 `build/client/www/js/runtime-config.js`
+  （桌面那份必须没有，否则桌面反而丢音频）。核对过的证据：已发布 APK（sha256 `27eadc94…`，224,848,906 B）内
+  `assets/public/js/media.js` 有 `mediaAliasEnabled` 2 处、`assets/public/js/runtime-config.js` 以
+  `globalThis.__SP_MEDIA_ALIAS__ = false;` 结尾、`assets/public/assets/audio/` 下 **517 个 `.mp3`** 条目齐全；
+  单元侧由游戏仓库 `test/media-url.test.js` 钉住。
+  ⚠️ 这只到"拆包 + 单测 + 纯静态等价道"，**没有**真机 Android 跑过 BGM —— 要写"已验证"必须补真机。
 - 大厅平台（另一套 Flask 服务，不在本仓库）：注册 400（`site.json` 与 `SKIP_EMAIL_VERIFY` 环境变量不一致）——
   修法与回归测试已备好在游戏运维仓库 `lain42-stronghold-ops`（`docs/10-lobby-register-400.md`、
   `scripts/patch-lobby-skip-email-verify.py`），**线上未部署**；库里 0 房间 / 1 用户、没有"从大厅选房→进游戏"的交接、

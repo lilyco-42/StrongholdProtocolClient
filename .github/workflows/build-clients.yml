@@ -94,6 +94,11 @@ jobs:
             [ "$GOT_SERVER" = "$WANT_SERVER" ] || { echo "闸门：要求 server=$WANT_SERVER，payload 实为 $GOT_SERVER"; exit 1; }
           fi
 
+      # 装机玩家可能在 LAN、飞机上、或根本连不上字体主机；payload 里出现第三方主机就是回归（旧产物确实带着它出门）。
+      - name: 零外部依赖（闸门）
+        shell: bash
+        run: node tools/check-payload-offline.mjs build/client/www
+
       - name: 装 Electron 依赖
         run: cd desktop && npm install
 
@@ -198,6 +203,11 @@ jobs:
           if [ -n "$WANT_SERVER" ]; then
             [ "$GOT_SERVER" = "$WANT_SERVER" ] || { echo "闸门：要求 server=$WANT_SERVER，payload 实为 $GOT_SERVER"; exit 1; }
           fi
+
+      # 装机玩家可能在 LAN、飞机上、或根本连不上字体主机；payload 里出现第三方主机就是回归（旧产物确实带着它出门）。
+      - name: 零外部依赖（闸门）
+        shell: bash
+        run: node tools/check-payload-offline.mjs build/client/www
 
       - name: 装 Capacitor 依赖
         run: cd mobile && npm install

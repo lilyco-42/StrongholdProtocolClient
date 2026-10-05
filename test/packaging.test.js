@@ -22,6 +22,7 @@ import { DATA_SHIM_JS, SIM_PRIVATE, findGameRoot, isGameRoot, readGameContract, 
 import { PATCHED_FILES, applyPayloadPatch, assertPatched } from '../tools/payload-patches.mjs';
 import { assembleClient, runtimeConfigSource, DEFAULT_SERVER, CLIENT_ROOT, SHELL_FILES, parseCommonArgs } from '../tools/package-client.mjs';
 import { desktopTargets } from '../tools/package-desktop.mjs';
+import { checkPayloadOffline } from '../tools/check-payload-offline.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -539,5 +540,83 @@ describe('audio: each host gets the URL form it can actually serve', () => {
   test('the desktop job leaves it on (serve.mjs resolves /media)', () => {
     assert.ok(!desktopJob.includes('__SP_MEDIA_ALIAS__ = false'), 'desktop keeps the alias');
     assert.ok(desktopJob.includes('stronghold-desktop-win'), 'sanity: this is the desktop job slice');
+  });
+});
+
+describe('payload offline gate (no third-party host in the boot path)', () => {
+  // The mirror is byte-identical to what Google serves (game repo: tools/fetch-webfonts.mjs --check --verify-bytes),
+  // so a payload that still reaches fonts.googleapis/gstatic gains nothing and breaks LAN/offline play; a payload
+  // carrying dl.lain42.top binds the installed client to the CDN and renders blank offline. Both used to ship.
+  const wf = readFileSync(path.join(ROOT, '.github', 'workflows', 'build-clients.yml'), 'utf8');
+
+  const SLICES = 120;
+  const mkPayload = (o = {}) => {
+    const root = mkdtempSync(path.join(tmpdir(), 'sp-offline-'));
+    mkdirSync(path.join(root, 'webfonts', 'google'), { recursive: true });
+    mkdirSync(path.join(root, 'data'), { recursive: true });
+    const urls = Array.from({ length: o.slices ?? SLICES }, (_, i) => `/webfonts/google/f${i}.woff2`);
+    writeFileSync(path.join(root, 'index.html'), o.remoteFont
+      ? '<html><head><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC" /></head></html>\n'
+      : '<html><head><link rel="stylesheet" href="/webfonts/google/google.css" /></head></html>\n');
+    if (!o.dropSheet) {
+      writeFileSync(path.join(root, 'webfonts', 'google', 'google.css'),
+        urls.map((u) => `@font-face{font-family:'Noto Sans SC';src:url(${u});font-display:swap}`).join('\n'));
+      for (const u of urls) {
+        if (o.dropSliceFile && u.endsWith('/f0.woff2')) continue;
+        writeFileSync(path.join(root, 'webfonts', 'google', path.basename(u)), 'wOF2');
+      }
+    }
+    writeFileSync(path.join(root, 'data', 'assets.json'),
+      JSON.stringify(o.cdn ? { bgm: 'https://dl.lain42.top/site/assets/audio/x.mp3' } : { bgm: 'assets/audio/x.mp3' }));
+    return root;
+  };
+  const cleanup = [];
+  const make = (o) => { const r = mkPayload(o); cleanup.push(r); return r; };
+  after(() => { for (const r of cleanup) rmSync(r, { recursive: true, force: true }); });
+
+  test('a mirrored payload passes and reports what it counted', () => {
+    const r = checkPayloadOffline(make());
+    assert.deepEqual(r.problems, []);
+    assert.equal(r.slices, SLICES);
+    assert.equal(r.woff2, SLICES);
+  });
+
+  test('a remote font link in index.html fails, naming the file', () => {
+    const r = checkPayloadOffline(make({ remoteFont: true }));
+    assert.equal(r.problems.length, 1, JSON.stringify(r.problems));
+    assert.match(r.problems[0], /^index\.html 引用外部字体主机 fonts\.googleapis\.com/);
+  });
+
+  test('a CDN-absolute manifest fails (offline play is the point of an exe/apk)', () => {
+    const r = checkPayloadOffline(make({ cdn: true }));
+    assert.match(r.problems.join('\n'), /assets\.json 引用 CDN 绝对地址 dl\.lain42\.top/);
+  });
+
+  test('a slice referenced by the sheet but missing from disk fails', () => {
+    const r = checkPayloadOffline(make({ dropSliceFile: true }));
+    assert.match(r.problems.join('\n'), /个切片文件缺失/);
+  });
+
+  test('a payload without the mirror sheet fails', () => {
+    const r = checkPayloadOffline(make({ dropSheet: true }));
+    assert.match(r.problems.join('\n'), /缺自托管字体表/);
+  });
+
+  test('a directory that is not a payload is refused, not silently passed', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'sp-notpayload-'));
+    cleanup.push(root);
+    const r = checkPayloadOffline(root);
+    assert.equal(r.problems.length, 1);
+    assert.match(r.problems[0], /不是 payload 根目录/);
+  });
+
+  test('both CI jobs run the gate before they build anything', () => {
+    const desktopJob = wf.slice(wf.indexOf('  desktop:'), wf.indexOf('  android:'));
+    const androidJob = wf.slice(wf.indexOf('  android:'));
+    for (const [name, job] of [['desktop', desktopJob], ['android', androidJob]]) {
+      assert.match(job, /check-payload-offline\.mjs/, `${name} job must run the offline gate`);
+      assert.ok(job.indexOf('check-payload-offline.mjs') < job.indexOf('npm run pack') || job.indexOf('check-payload-offline.mjs') < job.indexOf('cap sync android'),
+        `${name}: the gate has to run before the binary is built`);
+    }
   });
 });

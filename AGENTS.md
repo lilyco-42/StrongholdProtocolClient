@@ -76,17 +76,22 @@ gh workflow run build-clients.yml -f payload_url=<release 资产 URL> -f expect_
    并**排除混淆变量**：观战按钮的表达式是 `!codeOk || !online || spectateBlocked`，密钥框空着时它本来就是灰的 ——
    我曾据此报过一次假阳性。
 4. 任何状态里提到的文件名/分支/run 号，上面必须有一条命令的输出压着它。没有就先跑。
-5. `node --test` 的通过数要写实际数字（游戏仓库全量当前 3626 项 / 0 失败 / 16 跳过）。
+5. `node --test` 的通过数要写实际数字。游戏仓库全量当前 **3633 项**：并行整跑时唯一会红的是
+   `test/sim/robustness.test.js` 的 CPU 阈值闸（best-of-3 实测 0.52 ms/tick，阈值 0.5）；
+   单独跑该文件 **35/35 通过**（878–953 ms），且本分支没碰 `server/sim/**`、也没改这个测试文件
+   （`git diff upstream/master..HEAD -- server/sim test/sim` 为空）—— 是本机负载，不是回归。
 
 ## 7. 已知未修（别当成已解决）
 
-- 打包 `index.html` 仍引 **Google Fonts**（`fonts.googleapis.com` + `gstatic`，实测 16 个外部请求）；
-  中文正文 Noto Sans SC **只有 Google 那一份**，本地 `fonts.css` 只有 Bender / Novecento（拉丁）。
-  剪掉外链会让中文落到系统字体 —— 属于观感改动，需产品决定，不许顺手做。
+- 打包 `index.html` 的 **Google Fonts 外链**：已在**源头**改掉（游戏 fork 分支把整套字形镜像进仓库，见 §8），
+  但**已发布的产物仍带着外链**，直到用新 payload 重跑一次 CI。新闸门 `零外部依赖（闸门）`
+  （`tools/check-payload-offline.mjs`）会拦住这种"旧 payload 出产物"：对旧产物跑它就是红的。
 - Android 侧 `/media/…` 音频路由：`desktop/serve.mjs` 已实现 `resolveMediaPath`，
   Capacitor 那份静态资源**还没有**等价机制，所以 APK 的 BGM 仍需单独处理。
-- 大厅平台（另一套 Flask 服务，不在本仓库）：注册 400（`site.json` 与 `SKIP_EMAIL_VERIFY` 环境变量不一致）、
-  库里 0 房间 / 1 用户、没有"从大厅选房→进游戏"的交接、商店在卖聊天发不出的 `表情包套装`。
+- 大厅平台（另一套 Flask 服务，不在本仓库）：注册 400（`site.json` 与 `SKIP_EMAIL_VERIFY` 环境变量不一致）——
+  修法与回归测试已备好在游戏运维仓库 `lain42-stronghold-ops`（`docs/10-lobby-register-400.md`、
+  `scripts/patch-lobby-skip-email-verify.py`），**线上未部署**；库里 0 房间 / 1 用户、没有"从大厅选房→进游戏"的交接、
+  商店在卖聊天发不出的 `表情包套装`。
 - Actions artifact 只保 **7 天**；长期分发要另发 Release。
 
 ## 8. 当前发布状态（可核对，不要凭记忆写）
@@ -96,10 +101,14 @@ gh workflow run build-clients.yml -f payload_url=<release 资产 URL> -f expect_
 | 玩家可下载的产物 | Release tag `v0.1.3-compat`（本仓库）：桌面 zip 353,439,776 B + android debug apk 224,848,906 B | `gh api repos/lilyco-42/StrongholdProtocolClient/releases/tags/v0.1.3-compat --jq '.assets[]|[,]'`，GitHub 的 `digest` 就是 sha256，与本机 `sha256sum` 逐字节相等才算上传完好 |
 | CI 构建 | run `37225727424`（desktop + android 均 success），触发时传 `expect_app=0.1.3` | `gh run view <id> --json conclusion` —— **不要**用 `gh run watch` 的 shell 退出码 |
 | CI 读的 payload | Release tag `payload-v0.1.3-c5`（游戏代码 = fork 分支 `feat/net-cross-version-capability` @ `a2ccc3a`，`v0.1.3-5-ga2ccc3a`，`dirty:false`） | 产物内 `resources/www/build.json` |
+| **待发布的 payload**（含字体镜像） | 本机 `D:/Code/_artifacts/sp-client-payload-0.1.3-c8.tar.gz`：**218,916,336 B**，sha256 `d31f7d3c8f8b357f9d285d843dd20b694cd37a9b66ac70d3a3911ae7996caa04`，游戏代码 `v0.1.3-8-g86719d1`（4366 个文件 / 293.0 MB，含 `webfonts/google/` 114 条目）。**尚未上传**，上传与 `gh workflow run` 需要人点头 | `node tools/check-payload-offline.mjs D:/Code/_artifacts/payload-c8`（727 个文本文件、112 woff2、0 问题）；`tar -xOf … ./build.json` 读 `game.describe` |
 | 线上服务器 | 仍是 **0.1.1**（`/healthz` 的 `app`），未重启、未改动 | `systemctl show stronghold -p ExecMainStartTimestamp` 应仍是 2026-10-04 20:03:41 |
 
 产物内必须能查到这三样（每次发布都重验，别沿用旧结论）：`app.asar` 里 `resolveMediaPath` ≥1；payload `js/net.js` 里 `serverKey`；APK 内 `assets/public/js/runtime-config.js` 含 `__SP_MEDIA_ALIAS__ = false`（桌面那份必须**没有**）。
 
 跨版本识别在生产上的实测（同一份产物）：连线上 0.1.1 → `serverApp='0.1.1'`、`probeFailed:false`，观战/移出成员/移出观战者三处 `ok:false reason:'older-server'`（点之前就识别到，因为生产 `/healthz` 有 CORS），`room.join` 仍 `ok:true`；连 0.1.3 → `确认本局信息` 正常开局。
 
-自托管字体的量级（决策用，别当结论）：Google 那条 css2 展开是 11 个 woff2 / 合计 43.3 MB（Noto Sans SC + Oxanium + Rajdhani）—— 这是**全集**，浏览器按 unicode-range 只取分片（我这次页面实测抓到 14 片）。自托管要么全量塞进 payload（+43 MB，太大），要么按游戏实际字符集裁剪（需防动态文本掉字）。
+自托管字体（已定案，不是待办）：**带 Chrome UA** 请求那条 css2 会得到 **421 个 @font-face / 112 个 woff2 / 4.84 MB**
+（不带 UA 的 11 个 / 43.3 MB 是未切片的旧格式，别拿它做决策）。游戏仓库 `tools/fetch-webfonts.mjs` 按这个把整套字形
+镜像进 `public/webfonts/google/`，`--check --verify-bytes` 逐个比 sha256 —— 实测 **112/112 与 Google 当前字节一致**，
+所以"观感不变"是字节级的相等，不是"差不多"。payload 侧由 `tools/check-payload-offline.mjs` 守住镜像完整。

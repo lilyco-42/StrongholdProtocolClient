@@ -72,6 +72,11 @@ gh workflow run build-clients.yml -f payload_url=<release 资产 URL> -f expect_
 
 1. `gh run view <id> --json conclusion` —— **不是** `gh run watch` 的 shell 退出码（末尾命令是 `tail` 时退出码毫无意义，踩过两次）。
 2. 产物必须**下载拆开再看**：`unzip -p … resources/app.asar | grep -c <函数名>`、读 `resources/www/build.json`。
+   只想确认"发布出去的那份字节里入口页还有没有外链"时，不用拉整包 —— 运维仓库 `scripts/spotcheck-release-entry.py`
+   用 zip 中央目录 + 单条 Range 就能取出来（~1 MB）。2026-10-05 16:09 这样实测 `v0.1.3-compat`：
+   桌面 `…/resources/www/index.html` 与 APK `assets/public/index.html` 未压缩都是 **6,684 B**，两份都是
+   **2 次 `fonts.googleapis.com` + 1 次 `fonts.gstatic.com`、`/webfonts/google/google.css` 0 次** —— 字体镜像确实还没出厂。
+   ⚠️ Git Bash 会把 `/webfonts/…` 这类前导斜杠参数改写成 Windows 路径，那个 0 就成了假 0，先 `export MSYS2_ARG_CONV_EXCL='*'`。
 3. 界面行为要在真实页面里点出来（`document.querySelector('.join-spectate').disabled`），
    并**排除混淆变量**：观战按钮的表达式是 `!codeOk || !online || spectateBlocked`，密钥框空着时它本来就是灰的 ——
    我曾据此报过一次假阳性。

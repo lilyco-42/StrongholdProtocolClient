@@ -23,7 +23,7 @@ import { DATA_SHIM_JS, SIM_PRIVATE, findGameRoot, isGameRoot, readGameContract, 
 import { PATCHED_FILES, applyPayloadPatch, assertPatched } from '../tools/payload-patches.mjs';
 import { assembleClient, runtimeConfigSource, DEFAULT_SERVER, CLIENT_ROOT, SHELL_FILES, parseCommonArgs } from '../tools/package-client.mjs';
 import { desktopTargets } from '../tools/package-desktop.mjs';
-import { checkPayloadOffline, checkZipOffline } from '../tools/check-payload-offline.mjs';
+import { checkPayloadOffline, checkZipOffline, OUTBOUND } from '../tools/check-payload-offline.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -463,6 +463,38 @@ describe('desktop shell: a stable loopback origin keeps localStorage', () => {
     } finally {
       await new Promise((r) => server.close(r));
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('the outbound gate catches every load-time reference form, protocol-relative included, and stays quiet on identifiers', () => {
+    // The five original families all required `https?:`, so `srcset="//cdn.example/x.png"` — which is exactly as
+    // external as an absolute URL once the page is on https, and hangs an offline LAN start — would have passed green.
+    // Measured 2026-10-05 on payload-c10: none of these forms occur there (198 text files), so this is a future-proof pin.
+    const mustFlag = {
+      'imagesrcset 属性': '<link imagesrcset="//h.example/a.png 2x">',
+      'srcset 属性': '<img srcset="//h.example/b.png 1x">',
+      'CSS url(//)': 'body{background:url(//h.example/bg.png)}',
+      'CSS @import "//"': '@import "//h.example/o.css";',
+      'fetch("//")': 'fetch("//h.example/f")',
+      'import("//")': 'import("//h.example/dyn")',
+      'new EventSource("//")': 'new EventSource("//h.example/s")',
+      'new WebSocket("wss://")': 'new WebSocket("wss://h.example/ws")',
+      'xhr.open("GET","//")': 'x.open("GET","//h.example/x",false)',
+      'navigator.sendBeacon("//")': 'navigator.sendBeacon("//h.example/beacon")',
+    };
+    // Not requests: an xmlns identifier and a URL inside a comment. Flagging those is what trains people to ignore a gate.
+    const mustNotFlag = {
+      'SVG xmlns 标识符': '<svg xmlns="http://www.w3.org/2000/svg"></svg>',
+      '注释里的地址': '// see //cdn.example.com/docs\n/* url(//cdn.example.com/x.png) */',
+    };
+    const hit = (s) => OUTBOUND.flatMap((rx) => [...s.matchAll(rx)].map((m) => m[1]));
+    for (const [label, s] of Object.entries(mustFlag)) {
+      const got = hit(s);
+      assert.ok(got.length >= 1, `${label} 应当被拦，实际没有 —— 闸门漏了这一种引用形式`);
+      assert.match(got[0], /h\.example/, `${label} 报出来的应当是那条地址，而不是 ["'] 之类的前缀：${got[0]}`);
+    }
+    for (const [label, s] of Object.entries(mustNotFlag)) {
+      assert.deepEqual(hit(s), [], `${label} 不发请求，拦它就是把闸门变成噪音`);
     }
   });
 

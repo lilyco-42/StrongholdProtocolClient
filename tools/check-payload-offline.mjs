@@ -29,12 +29,24 @@ export const OSS_HOST = /dl\.lain42\.top/;
  * dozens of doc and licence URLs inside comments, and `xmlns="http://www.w3.org/2000/svg"` is an identifier, not a
  * request — flagging those would train everyone to ignore the gate.
  */
+// Everything below is matched by **reference form**, not by a bare URL: a URL in a comment or an SVG `xmlns`
+// identifier never leaves the device, while these five families do issue a request. Protocol-relative forms
+// (`src="//host/x.png"`) are included on purpose — they inherit whatever scheme the page has, so they are just as
+// external as an absolute one, and an offline LAN start would hang on them.
 export const OUTBOUND = [
   /(?:href|src|action|poster|data-src)\s*=\s*["'](https?:\/\/[^"'\s]+)/g,
   /url\(\s*["']?(https?:\/\/[^)'"\s]+)/g,
   /(?:fetch|import|axios\.get)\s*\(\s*["'](https?:\/\/[^'"\s]+)/g,
   /new\s+WebSocket\s*\(\s*["'`](https?:\/\/[^'"`\s)]+)/g,
   /@import\s+(?:url\()?\s*["']?(https?:\/\/[^)'"\s]+)/g,
+  // 协议相对写法：省略了 scheme，host 仍然在设备外
+  /(?:href|src|srcset|action|poster|data-src|imagesrcset)\s*=\s*["'](\/\/[^"'\s]+)/g,
+  /url\(\s*["']?(\/\/[^)'"\s]+)/g,
+  /@import\s+(?:url\()?\s*["']?(\/\/[^)'"\s]+)/g,
+  /(?:fetch|import|axios\.get)\s*\(\s*["'](\/\/[^'"\s]+)/g,
+  /new\s+(?:WebSocket|EventSource)\s*\(\s*["'`]\s*(?:wss?:|https?:)?(\/\/[^"'`\s)]+)/g,
+  /\.open\(\s*["'](?:GET|POST|HEAD|PUT|DELETE)["']\s*,\s*["']((?:https?:)?\/\/[^'"\s]+)/gi,
+  /navigator\.sendBeacon\(\s*["']((?:https?:)?\/\/[^'"\s]+)/g,
 ];
 /** Text formats that can carry a URL. Binary assets (.png/.woff2/.skel/.mp3 …) are not scanned. */
 export const TEXT_EXT = new Set(['.html', '.css', '.js', '.mjs', '.json', '.svg', '.txt', '.atlas', '.csv']);

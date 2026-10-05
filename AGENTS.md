@@ -88,3 +88,18 @@ gh workflow run build-clients.yml -f payload_url=<release 资产 URL> -f expect_
 - 大厅平台（另一套 Flask 服务，不在本仓库）：注册 400（`site.json` 与 `SKIP_EMAIL_VERIFY` 环境变量不一致）、
   库里 0 房间 / 1 用户、没有"从大厅选房→进游戏"的交接、商店在卖聊天发不出的 `表情包套装`。
 - Actions artifact 只保 **7 天**；长期分发要另发 Release。
+
+## 8. 当前发布状态（可核对，不要凭记忆写）
+
+| 东西 | 位置 / 标识 | 怎么核对 |
+|---|---|---|
+| 玩家可下载的产物 | Release tag `v0.1.3-compat`（本仓库）：桌面 zip 353,439,776 B + android debug apk 224,848,906 B | `gh api repos/lilyco-42/StrongholdProtocolClient/releases/tags/v0.1.3-compat --jq '.assets[]|[,]'`，GitHub 的 `digest` 就是 sha256，与本机 `sha256sum` 逐字节相等才算上传完好 |
+| CI 构建 | run `37225727424`（desktop + android 均 success），触发时传 `expect_app=0.1.3` | `gh run view <id> --json conclusion` —— **不要**用 `gh run watch` 的 shell 退出码 |
+| CI 读的 payload | Release tag `payload-v0.1.3-c5`（游戏代码 = fork 分支 `feat/net-cross-version-capability` @ `a2ccc3a`，`v0.1.3-5-ga2ccc3a`，`dirty:false`） | 产物内 `resources/www/build.json` |
+| 线上服务器 | 仍是 **0.1.1**（`/healthz` 的 `app`），未重启、未改动 | `systemctl show stronghold -p ExecMainStartTimestamp` 应仍是 2026-10-04 20:03:41 |
+
+产物内必须能查到这三样（每次发布都重验，别沿用旧结论）：`app.asar` 里 `resolveMediaPath` ≥1；payload `js/net.js` 里 `serverKey`；APK 内 `assets/public/js/runtime-config.js` 含 `__SP_MEDIA_ALIAS__ = false`（桌面那份必须**没有**）。
+
+跨版本识别在生产上的实测（同一份产物）：连线上 0.1.1 → `serverApp='0.1.1'`、`probeFailed:false`，观战/移出成员/移出观战者三处 `ok:false reason:'older-server'`（点之前就识别到，因为生产 `/healthz` 有 CORS），`room.join` 仍 `ok:true`；连 0.1.3 → `确认本局信息` 正常开局。
+
+自托管字体的量级（决策用，别当结论）：Google 那条 css2 展开是 11 个 woff2 / 合计 43.3 MB（Noto Sans SC + Oxanium + Rajdhani）—— 这是**全集**，浏览器按 unicode-range 只取分片（我这次页面实测抓到 14 片）。自托管要么全量塞进 payload（+43 MB，太大），要么按游戏实际字符集裁剪（需防动态文本掉字）。

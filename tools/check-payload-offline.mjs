@@ -29,7 +29,7 @@ export const TEXT_EXT = new Set(['.html', '.css', '.js', '.mjs', '.json', '.svg'
 export const SHEET = 'webfonts/google/google.css';
 export const MIN_SLICES = 100;
 
-function collectProblems(read, exists, listDir, listSheetUrls) {
+function collectProblems(read, exists, listDir, listSheetUrls, mirrorNames) {
   const problems = [];
   const files = listDir().filter((rel) => TEXT_EXT.has(path.extname(rel).toLowerCase()));
   for (const rel of files) {
@@ -49,8 +49,23 @@ function collectProblems(read, exists, listDir, listSheetUrls) {
   const names = urls.map((u) => /^url\(\/webfonts\/google\/(.+)\)$/.exec(u)[1]);
   if (names.length < MIN_SLICES) problems.push(`字体表只有 ${names.length} 个本地切片`);
   if (!/font-display:\s*swap/.test(sheet)) problems.push('字体表丢了 display=swap 时序');
-  const missing = names.filter((n) => !exists(`webfonts/google/${n}`));
-  if (missing.length) problems.push(`${missing.length} 个切片文件缺失，例如 ${missing[0]}`);
+  // Case-EXACT membership, deliberately not existsSync(): the desktop job runs on windows-latest and the game repo
+  // lives on a case-insensitive checkout, while Android serves these from ext4 — a name that only differs in case
+  // passes the file check on Windows and 404s on a phone. Same for two files differing only by case.
+  const disk = mirrorNames();
+  const exact = new Set(disk);
+  const lower = new Map();
+  for (const n of disk) lower.set(n.toLowerCase(), (lower.get(n.toLowerCase()) || 0) + 1);
+  const collisions = [...lower.entries()].filter(([, c]) => c > 1).map(([k]) => k);
+  if (collisions.length) problems.push(`镜像目录里有只差大小写的同名文件（Windows 打得开、Android/Linux 只认一个）：${collisions.slice(0, 3).join(', ')}`);
+  const missing = names.filter((n) => !exact.has(n));
+  if (missing.length) {
+    const caseOnly = missing.filter((n) => lower.has(n.toLowerCase()));
+    problems.push(`${missing.length} 个切片文件缺失，例如 ${missing[0]}`);
+    if (caseOnly.length) {
+      problems.push(`其中 ${caseOnly.length} 个只差大小写（字体表要 ${caseOnly[0]}，盘上是另一套大小写）—— 手机上是 404`);
+    }
+  }
   const woff2 = listSheetUrls();
   if (woff2 && woff2 < names.length) problems.push(`目录里只有 ${woff2} 个 woff2，字体表引用了 ${names.length} 个`);
   return { files: files.length, woff2, slices: names.length, problems };
@@ -78,9 +93,10 @@ export function checkPayloadOffline(root) {
   const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
   const exists = (rel) => fs.existsSync(path.join(root, rel));
   const dir = path.join(root, 'webfonts', 'google');
+  const names = () => (fs.existsSync(dir) ? fs.readdirSync(dir) : []);
   const list = () => textFiles(root);
-  const woff = () => (fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith('.woff2')).length : 0);
-  return collectProblems(read, exists, list, woff);
+  const woff = () => names().filter((f) => f.endsWith('.woff2')).length;
+  return collectProblems(read, exists, list, woff, names);
 }
 
 /** Minimal zip reader: central directory + stored/deflate entries. Enough for an APK's assets/. */
@@ -142,8 +158,9 @@ export function checkZipOffline(file, o = {}) {
     return zipRead({ buf }, e);
   };
   const list = () => [...byName.keys()].filter((n) => n.startsWith(prefix)).map((n) => n.slice(prefix.length));
-  const woff = () => list().filter((n) => n.endsWith('.woff2') && n.startsWith('webfonts/google/')).length;
-  const r = collectProblems(read, exists, list, woff);
+  const mirror = () => list().filter((n) => n.startsWith('webfonts/google/')).map((n) => n.slice('webfonts/google/'.length));
+  const woff = () => mirror().filter((n) => n.endsWith('.woff2')).length;
+  const r = collectProblems(read, exists, list, woff, mirror);
   return { ...r, entries: entries.length };
 }
 

@@ -13,7 +13,7 @@ import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import zlib from 'node:zlib';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -622,18 +622,19 @@ describe('payload offline gate (no third-party host in the boot path)', () => {
   });
 });
 
+const sheetTextFor = (n) => Array.from({ length: n }, (_, i) => "@font-face{font-family:'Noto Sans SC';src:url(/webfonts/google/f" + i + ".woff2);font-display: swap}").join(String.fromCharCode(10));
+
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) { let c = i; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[i] = c >>> 0; }
+  return t;
+})();
+
 describe('artifact-level offline gate (reads APK zip entries)', () => {
   // The payload gate is not enough on its own: electron-builder puts the game www next to the 29 KB shell asar
   // (resources/www), and Capacitor stores it *deflate-compressed* inside the apk. Measured on the published apk:
   // grepping the whole file for "fonts.googleapis.com" gives 0, while the entry itself contains it twice — so an
   // artifact gate that does not open the zip would have waved the old build through.
-
-  const CRC_TABLE = (() => {
-    const t = new Uint32Array(256);
-    for (let i = 0; i < 256; i++) { let c = i; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[i] = c >>> 0; }
-    return t;
-  })();
-  const crc32 = (buf) => { let c = 0xffffffff; for (const b of buf) c = CRC_TABLE[(c ^ b) & 0xff] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
 
   /** A real (small) zip: local headers + central directory + EOCD, stored or deflate per entry. */
   const makeZip = (items) => {
@@ -643,7 +644,7 @@ describe('artifact-level offline gate (reads APK zip entries)', () => {
       const nameBuf = Buffer.from(name, 'utf8');
       const raw = Buffer.from(text, 'utf8');
       const data = method === 8 ? zlib.deflateRawSync(raw) : raw;
-      const crc = crc32(raw);
+      let cc = 0xffffffff; for (const b of raw) cc = CRC_TABLE[(cc ^ b) & 0xff] ^ (cc >>> 8); const crc = (cc ^ 0xffffffff) >>> 0;
       const lh = Buffer.alloc(30);
       lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt16LE(method, 8);
       lh.writeUInt32LE(crc, 14); lh.writeUInt32LE(data.length, 18); lh.writeUInt32LE(raw.length, 22);
@@ -748,5 +749,97 @@ describe('the artifact gate points where the packagers actually put the bytes', 
     assert.equal(cfg.webDir.replace(/^\.\.\//, ''), 'build/client/www', 'android webDir is the same staged payload');
     assert.match(cfg.server.androidScheme, /^https$/, 'https scheme — the /media alias 404s here, hence the flag step');
     assert.ok(wf.includes('check-payload-offline.mjs --zip'), 'android artifact gate must open the apk, not grep it');
+  });
+});
+
+describe('the mirror check is case-exact, because Android filesystems are', () => {
+  // existsSync() on a Windows runner says "there" for F0.woff2 when the sheet asks for f0.woff2 — and the phone 404s.
+  const mkMirrorZip = (mutate) => {
+    const items = [
+      { name: 'assets/public/index.html', method: 0, text: '<link href="/webfonts/google/google.css">' },
+      { name: 'assets/public/webfonts/google/google.css', text: sheetTextFor(60) },
+    ];
+    for (let i = 0; i < 60; i++) items.push({ name: `assets/public/webfonts/google/f${i}.woff2`, text: 'wOF2' });
+    return makeZipFrom(items.filter((x) => !x.drop), mutate(items));
+  };
+  const makeZipFrom = (items, extra = []) => {
+    const all = [...items, ...extra];
+    const locals = [], cents = [];
+    let offset = 0;
+    for (const { name, text, method = 8 } of all) {
+      const nameBuf = Buffer.from(name, 'utf8'); const raw = Buffer.from(text, 'utf8');
+      const data = method === 8 ? zlib.deflateRawSync(raw) : raw;
+      let c = 0xffffffff; for (const b of raw) c = CRC_TABLE[(c ^ b) & 0xff] ^ (c >>> 8); c = (c ^ 0xffffffff) >>> 0;
+      const lh = Buffer.alloc(30);
+      lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt16LE(method, 8);
+      lh.writeUInt32LE(c, 14); lh.writeUInt32LE(data.length, 18); lh.writeUInt32LE(raw.length, 22); lh.writeUInt16LE(nameBuf.length, 26);
+      locals.push(lh, nameBuf, data);
+      const ch = Buffer.alloc(46);
+      ch.writeUInt32LE(0x02014b50, 0); ch.writeUInt16LE(20, 4); ch.writeUInt16LE(20, 6); ch.writeUInt16LE(method, 10);
+      ch.writeUInt32LE(c, 16); ch.writeUInt32LE(data.length, 20); ch.writeUInt32LE(raw.length, 24);
+      ch.writeUInt16LE(nameBuf.length, 28); ch.writeUInt32LE(offset, 42);
+      cents.push(ch, nameBuf);
+      offset += lh.length + nameBuf.length + data.length;
+    }
+    const cen = Buffer.concat(cents); const eocd = Buffer.alloc(22);
+    eocd.writeUInt32LE(0x06054b50, 0); eocd.writeUInt16LE(all.length, 8); eocd.writeUInt16LE(all.length, 10);
+    eocd.writeUInt32LE(cen.length, 12); eocd.writeUInt32LE(offset, 16);
+    const p = path.join(mkdtempSync(path.join(tmpdir(), 'sp-casezip-')), 'a.apk');
+    writeFileSync(p, Buffer.concat([...locals, cen, eocd]));
+    return p;
+  };
+
+  test('a mirror name that only differs in case is reported as missing, not as present', () => {
+    // sheet wants f0.woff2; disk offers F0.woff2 instead.
+    const p = makeZipFrom([
+      { name: 'assets/public/index.html', method: 0, text: '<link href="/webfonts/google/google.css">' },
+      { name: 'assets/public/webfonts/google/google.css', text: sheetTextFor(120) },
+      ...Array.from({ length: 119 }, (_, i) => ({ name: `assets/public/webfonts/google/f${i + 1}.woff2`, text: 'wOF2' })),
+      { name: 'assets/public/webfonts/google/F0.woff2', text: 'wOF2' },
+    ]);
+    const r = checkZipOffline(p);
+    assert.match(r.problems.join('\n'), /个切片文件缺失/);
+    assert.match(r.problems.join('\n'), /只差大小写/, '必须点破"只差大小写"，否则没人知道为什么算缺失');
+  });
+
+  test('two files differing only by case are refused', () => {
+    const p = makeZipFrom([
+      { name: 'assets/public/index.html', method: 0, text: '<link href="/webfonts/google/google.css">' },
+      { name: 'assets/public/webfonts/google/google.css', text: sheetTextFor(120) },
+      ...Array.from({ length: 120 }, (_, i) => ({ name: `assets/public/webfonts/google/f${i}.woff2`, text: 'wOF2' })),
+      { name: 'assets/public/webfonts/google/F119.woff2', text: 'wOF2' },
+    ]);
+    assert.match(checkZipOffline(p).problems.join('\n'), /只差大小写的同名文件/);
+  });
+
+  test('the directory mode is case-exact too (this is the one existsSync gets wrong)', () => {
+    // Windows: fs.existsSync('f0.woff2') is true when the file on disk is F0.woff2 — so a payload assembled on a
+    // windows-latest runner can pass an existsSync check and still 404 on a phone. readdirSync returns the stored
+    // casing, which is what the gate now compares against.
+    const root = mkdtempSync(path.join(tmpdir(), 'sp-casedir-'));
+    mkdirSync(path.join(root, 'webfonts', 'google'), { recursive: true });
+    writeFileSync(path.join(root, 'index.html'), '<link href="/webfonts/google/google.css">');
+    writeFileSync(path.join(root, 'webfonts', 'google', 'google.css'), sheetTextFor(120));
+    writeFileSync(path.join(root, 'webfonts', 'google', 'F0.woff2'), 'wOF2');
+    for (let i = 1; i < 120; i++) writeFileSync(path.join(root, 'webfonts', 'google', `f${i}.woff2`), 'wOF2');
+    assert.ok(existsSync(path.join(root, 'webfonts', 'google', 'f0.woff2')), '前提：existsSync 对大小写不敏感（正因如此不能用它判）');
+    const r = checkPayloadOffline(root);
+    const flat = r.problems.join('\n');
+    assert.match(flat, /个切片文件缺失/);
+    assert.match(flat, /只差大小写/, '要说出"只差大小写"，否则没人明白为什么算缺失');
+  });
+
+  test('the real payload mirror is case-exact (measured, not assumed)', () => {
+    // 112 slices on disk must match the sheet's 112 names character for character.
+    const dir = path.join(CLIENT_ROOT, '..', 'Stronghold-Protocol-upstream', 'public', 'webfonts', 'google');
+    if (!existsSync(dir)) return;   // the game checkout is not next to this repo on every machine
+    const sheet = readFileSync(path.join(dir, 'google.css'), 'utf8');
+    const want = [...new Set([...sheet.matchAll(/url\(\/webfonts\/google\/([^)]+\.woff2)\)/g)].map((m) => m[1]))];
+    const disk = readdirSync(dir).filter((f) => f.endsWith('.woff2'));
+    assert.ok(want.length >= 100, `sheet references only ${want.length}`);
+    assert.deepEqual(want.filter((n) => !disk.includes(n)), [], '有切片名字对不上（大小写敏感）');
+    const seen = new Map();
+    for (const f of disk) seen.set(f.toLowerCase(), (seen.get(f.toLowerCase()) || 0) + 1);
+    assert.deepEqual([...seen].filter(([, c]) => c > 1), [], '镜像目录里有只差大小写的同名文件');
   });
 });

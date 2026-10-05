@@ -1,6 +1,8 @@
 # Stronghold Protocol · 端侧客户端打包
 
-把《卫戍协议：盟约》的浏览器客户端打成 **Windows 客户端**（Electron）和 **Android `.apk`**（Capacitor）：素材与代码从本地读（进对局不用重新下载约 260 MB 素材），房间、回合、联机仍然走服务器——默认 **`localhost:3000`**（自己在本机/局域网跑游戏服务器；官方远程服已下线）。
+把《卫戍协议：盟约》的浏览器客户端打成 **Windows 客户端**（Electron）和 **Android `.apk`**（Capacitor）：素材与代码从本地读（进对局不用重新下载约 260 MB 素材），房间、回合、联机仍然走服务器。
+
+`tools/package-client.mjs` 的代码默认值是 `localhost:3000`（自己开服用），但**发出去的产物不用它**：CI 打包时传 `--server sp.lain42.top`，所以你现在下载的 exe/apk 里那份 `js/runtime-config.js` 写的是 `globalThis.__SP_SERVER__ = "sp.lain42.top"`（2026-10-05 从发布 APK 里解出来核过）。想临时换服务器用 `--server <地址>` 或 `?server=`。
 
 游戏本体（Node 服务器 + 浏览器客户端，GPL-3.0）是**另一个仓库**：上游 <https://github.com/sganggs/Stronghold-Protocol>。
 本仓库只放"壳"和打包流程，**从不修改游戏仓库**——客户端要的那 3 处改动以补丁形式打在 payload 上（见下）。
@@ -14,6 +16,64 @@ npm test                    # 打包流程的单元/契约测试（无游戏 che
 ```
 
 详细说明（Android SDK 准备、签名、**服务器公告**、排错、**部署与重启**、**查服务器忙不忙**）见 **[docs/PACKAGING.md](docs/PACKAGING.md)**；服务器上的发版自动化（钩子/定时器脚本 `deploy/`）见 **[docs/DEPLOY-SERVER.md](docs/DEPLOY-SERVER.md)**。
+
+## 玩家上手（不用会编译，只要装和玩）
+
+东西在 GitHub 的 **Releases** 里（仓库页 → Releases → 最新的 `v0.1.3-compat`），一共两个文件，下自己那台设备要用的那个：
+
+| 你要玩的设备 | 下载 | 大小 | 怎么装 |
+|---|---|---|---|
+| Windows 10/11（64 位） | `StrongholdProtocol-desktop-win-x64-0.1.3-compat.zip` | 353,439,776 B（约 337 MiB） | 解压，**整个文件夹一起放着**，双击里面的 `StrongholdProtocol.exe` |
+| 安卓手机（Android 7.0 及以上） | `Stronghold-0.1.3-compat-android-debug.apk` | 224,848,906 B（约 214 MiB） | 传到手机 → 点开除 → 允许"未知来源/安装未知应用" |
+
+不确定下到的文件是不是完好的，对一下指纹（GitHub 每个资产的 `digest` 就是 sha256）：
+
+```
+sha256sum StrongholdProtocol-desktop-win-x64-0.1.3-compat.zip
+gh api repos/lilyco-42/StrongholdProtocolClient/releases/tags/v0.1.3-compat --jq '.assets[]|[.name,.digest]|@tsv'
+```
+两个 sha256 必须**逐字节相等**才算下载完好（不相等多半是没下全，重下即可）。
+
+### 第一次打开
+
+1. 会先看到一个菜单页（不是直接进游戏）。选**多人游戏**。
+2. 列表里应该有一条指向官方服的条目（`sp.lain42.top`）；没有就点**添加服务器**，名字随便填，地址填 `sp.lain42.top` 就行——**不用写 `ws://` 前缀**，程序会自己试。
+3. 绿灯才是真能连进去（探测直接开 `/ws`，和进游戏用的是同一条通道）。双击进入。
+4. 之后想换服务器：桌面按 **F2**（或给 exe 加 `--choose-server`）；手机每次都回到这个菜单，属于有意为之——手机没有 F2，免得选完回不去。
+
+### 桌面版几个省事的小知识
+
+- **一定要整个文件夹一起用**。只把 `StrongholdProtocol.exe` 拷走会打不开（缺 DLL 和 `resources/`）。换机器就重新解压一份，别拷单个 exe。
+- **进度、身份、设置不会丢**：桌面壳固定用 `127.0.0.1:47821` 这个本地地址提供服务（`localStorage` 按地址隔离，端口每次随机等于每次都是全新安装）。如果 47821 被别的程序占了，会自动往后试 16 个端口。
+- **存档/日志位置**（要报告问题时把它的前几十行发过来）：
+
+  ```
+  %APPDATA%\StrongholdProtocol\client.log        ← 出问题时看这个，1 MB 自动滚动
+  %APPDATA%\StrongholdProtocol\trusted-certs.json ← 你手动信任过的自建服务器证书
+  ```
+- 自己开服（frp / 内网 / 自签证书）：第一次连会弹一次窗，写明域名 + 证书指纹 + 风险，点"仍然连接"只信任**这一台的这张证书**，其它服务器照旧严格校验；证书换了会再问。完全不想被问就加 `--insecure-tls`（等于对所有证书放行，只建议自己玩用）。
+- 其他命令行参数：`--server <地址>`（本次强制走某个服务器）、`--choose-server`（强制显示菜单）、`--fullscreen`。快捷键 F2 / F11 / F5 / F12。
+- **卸载**：删掉那个文件夹即可；想连本地记录一起清掉再删 `%APPDATA%\StrongholdProtocol`。
+
+### 安卓版几个省事的小知识
+
+- 这个 APK 是 **debug 签名**（`applicationId` = `site.starst.stronghold`，最低 `minSdk 24`）。所以：
+  - 手机上**已经装了别的签名的同名版本**会装不上——先卸载旧的（卸载会清掉那台手机上的本地进度与设置）。
+  - 它不能上架应用商店，也不该期待"自动更新"；换新版本就是再下一份覆盖安装（同签名可以覆盖）。
+- 横屏启动，状态栏/导航栏会被隐藏（划一下边缘仍能临时唤出），刘海区域会被游戏画面使用——HUD 本身按安全区排版，不会被裁。
+- 首次进菜单加服务器时，连局域网的 `ws://`（明文）是可以的：本 APK 打开了混合内容允许。
+- **切到后台再回来可能会掉线**（这是当前实现里已知的一段窗口，不是你的手机坏了）：服务器每 30 秒检查一次心跳，一轮没回应就断开；客户端要等自己那 15 秒的静默判定才会开始重连。所以息屏/切微信回来卡十几秒属预期，之后会自动重连并带回你的座位（重连凭据存在本地）。
+
+### 想要 .msi 安装程序？
+
+现在**没有**，也不是漏了：构建配置里 Windows 的目标是 `dir`（`desktop/package.json` → `build.win.target: ["dir"]`），因为目录版启动约 0.3 秒，而单文件 portable 每次启动都要解压整包（实测约 24 秒）。
+要 MSI/NSIS 安装版，需要把那个 target 改成 `["nsis"]`（或加 `msi`）并让 CI 重跑一次；代价请一并考虑：安装后约 585 MB 落在 `Program Files`、每次更新走"卸载旧版再装"，以及**我们没有代码签名证书**——SmartScreen 会弹"未知发布者"警告（zip 版同样有这层提示，但安装程序会更显眼）。想开这个口子就说一声，改动很小但需要一次出厂。
+
+### 已知还没好的两处（当前发布的这两个文件）
+
+1. **首屏可能因为外部字体慢**：已发布的桌面/APK 里那份 `index.html` 仍然引用 Google Fonts（实测：2 次 `fonts.googleapis.com` + 1 次 `fonts.gstatic.com`）。国内网络下这会让首屏变慢甚至短时间字体不齐。修复已经把字形逐字节镜像进构建里了，**只是还没出厂**——出新一版 exe/apk 之后这段会消失。
+2. **单人模式还是占位**：菜单里的"单人游戏"点了只给提示。大厅、房间、模拟都在服务端，还没有纯前端单机实现。
+
 
 ```
 npm run server:status                                  # 现在多少人在线 / 多少对局在跑
@@ -35,7 +95,7 @@ npm run server:status -- --watch --under 40             # 蹲空窗：humans ≤
 | `tools/package-client.mjs` | 把游戏仓库的挂载点摊平成 `build/client/www`，生成 `data.js` / `js/runtime-config.js` / `js/shell/*` / `css/shell-display.css` / `build.json`，并应用 payload 补丁 |
 | `tools/game-contract.mjs` | 游戏仓库路径解析 + `DATA_SHIM_JS` / `SIM_PRIVATE` 的对照校验 + 版本读取 |
 | `tools/payload-patches.mjs`、`tools/unified-diff.mjs` | 把 `patches/game-client.patch` 打在 payload 副本上（自带极简 diff 应用器，不依赖 git） |
-| `patches/game-client.patch` | 客户端改动（3 个文件、6 个 hunk，见下），`git diff` 生成 || `shell/picker.js`、`shell/picker-core.js` | 端侧进游戏前的菜单：主页"单人游戏 / 多人游戏"，多人页可添加服务器（名称 + 地址）、直接连接、探测服务器并记住上次选择；`picker-core.js` 是纯逻辑（可单测） |
+| `patches/game-client.patch` | 客户端改动（3 个文件、7 个 hunk —— `index.html` 2 / `js/net.js` 3 / `js/screens/room.js` 2，见下），`git diff` 生成 || `shell/picker.js`、`shell/picker-core.js` | 端侧进游戏前的菜单：主页"单人游戏 / 多人游戏"，多人页可添加服务器（名称 + 地址）、直接连接、探测服务器并记住上次选择；`picker-core.js` 是纯逻辑（可单测） |
 | `shell/display.css` | 端侧显示修正：横屏手机的 HUD/棋盘比例（见下"手机端适配"） |
 | `desktop/` | Electron 壳：只监听 `127.0.0.1` 的静态服务（固定端口 47821，让 `localStorage` 跨重启保留，见 §4.4）+ 窗口；`icon.ico`。默认出**目录版**（`win-unpacked/`），`--portable` 才出单文件 exe。日志在 `%APPDATA%\StrongholdProtocol\client.log`（见 §4.3） |
 | `mobile/` | Capacitor 工程（`webDir` → `../build/client/www`）+ 生成的 `android/` Gradle 工程 |
@@ -112,7 +172,7 @@ npm run client:desktop            # 默认：build/desktop/win-unpacked/（exe +
 
 - **主页**：上下两个选项——**单人游戏**（预留：游戏的大厅 / 房间 / 模拟都在服务端，还没有"纯前端单机"的实现，点了只给提示）、**多人游戏**。
 - **多人游戏页**：服务器列表 + **添加服务器**（填名称与地址）、**直接连接**（只填地址，连上后不进列表）、**编辑**（改选中的自建服务器；内置的"本机 / 局域网"与打包默认服不可改）、**刷新**（把所有服务器重新测一遍延迟）与"返回"。
-- **列出的服务器**：内置 `本机 / 局域网 localhost:3000`（官方远程服已下线）；`--server` 打包时指定的地址会作为"默认服务器"列出；再加上自己添加的服务器（存在客户端本地，旧的"只存地址"格式会自动升级成"名称 + 地址"）。每次打开都会**探测**：直接开 `/ws`（和游戏用同一条通道，所以不需要服务器支持 CORS），绿灯代表真的能连进去；如果服务器给 `/healthz` 加了 CORS 头，还会显示版本 / 在线人数。
+- **列出的服务器**：内置项只有 `本机 / 局域网 localhost:3000`（`shell/picker-core.js` 的 `BUILTIN_SERVERS`，给自己开服的人）；打包时 `--server` 指定的地址作为"默认服务器"排在它前面（**当前发布的产物是 `sp.lain42.top`**）；再加上自己添加的服务器（存在客户端本地，旧的"只存地址"格式会自动升级成"名称 + 地址"）。每次打开都会**探测**：直接开 `/ws`（和游戏用同一条通道，所以不需要服务器支持 CORS），绿灯代表真的能连进去；如果服务器给 `/healthz` 加了 CORS 头，还会显示版本 / 在线人数。
 - **地址怎么写**：`host`、`host:port`、`http(s)://…`、`ws(s)://…` 都行，**不用手写协议**——不带协议时，带端口的地址先按 `ws://` 猜（`:443` 除外），公网域名默认 `wss://`；猜的那个连不上就自动换另一种协议再试，哪个通用哪个，并把那个地址记下来。所以公网 IP + 端口（如 `211.71.60.138:3000`）能直接填。
 - **记住上次选择**：桌面端勾上"记住并直接进入"后，下次启动直接进游戏（想换服务器按 **F2**，或用 `--choose-server` 启动）。Android 没有 F2，所以每次都显示这个页面（默认不记住），免得换了服务器回不去。
 - **网页版不受影响**：浏览器版没有这个页面，服务器永远是自己所在的站点。

@@ -64,7 +64,7 @@ export const DEFAULT_PORT = 47821;
 export const PORT_SEARCH = 16;
 
 /** First path segments under www/ that are content-addressed enough to cache for a day (server/index.js LONG_CACHE_DIRS). */
-const LONG_CACHE_DIRS = new Set(['assets', 'fonts', 'vendor']);
+const LONG_CACHE_DIRS = new Set(['assets', 'fonts', 'vendor', 'webfonts']);
 const LONG_CACHE = 'public, max-age=86400';
 const NO_CACHE = 'no-cache';
 

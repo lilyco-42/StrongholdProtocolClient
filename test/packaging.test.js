@@ -584,8 +584,10 @@ describe('payload offline gate (no third-party host in the boot path)', () => {
 
   test('a remote font link in index.html fails, naming the file', () => {
     const r = checkPayloadOffline(make({ remoteFont: true }));
-    assert.equal(r.problems.length, 1, JSON.stringify(r.problems));
-    assert.match(r.problems[0], /^index\.html 引用外部字体主机 fonts\.googleapis\.com/);
+    // 一条外链现在同时违反两条规则（字体主机 + 站外请求），所以按内容断言、不按条数断言。
+    assert.ok(r.problems.some((x) => /^index\.html 引用外部字体主机 fonts\.googleapis\.com/.test(x)), JSON.stringify(r.problems));
+    assert.ok(r.problems.some((x) => /会向站外发请求/.test(x)), JSON.stringify(r.problems));
+    assert.equal(r.problems.filter((x) => /引用外部字体主机/.test(x)).length, 1, '只有 index.html 该被点名');
   });
 
   test('a CDN-absolute manifest fails (offline play is the point of an exe/apk)', () => {
@@ -691,8 +693,9 @@ describe('artifact-level offline gate (reads APK zip entries)', () => {
 
   test('finds the host inside a compressed entry (whole-file grep would miss it)', () => {
     const r = checkZipOffline(goodApk({ remoteFont: true }));
-    assert.equal(r.problems.length, 1, JSON.stringify(r.problems));
-    assert.match(r.problems[0], /^index\.html 引用外部字体主机/);
+    assert.ok(r.problems.some((x) => /^index\.html 引用外部字体主机/.test(x)), JSON.stringify(r.problems));
+    assert.ok(r.problems.some((x) => /会向站外发请求/.test(x)), '压缩条目里的站外引用也要单独报出来');
+    assert.equal(r.problems.filter((x) => /引用外部字体主机/.test(x)).length, 1);
   });
 
   test('a missing slice inside the apk fails, not just a missing slice on disk', () => {
@@ -841,5 +844,55 @@ describe('the mirror check is case-exact, because Android filesystems are', () =
     const seen = new Map();
     for (const f of disk) seen.set(f.toLowerCase(), (seen.get(f.toLowerCase()) || 0) + 1);
     assert.deepEqual([...seen].filter(([, c]) => c > 1), [], '镜像目录里有只差大小写的同名文件');
+  });
+});
+
+describe('the offline gate bans outbound references, not URL-shaped strings', () => {
+  // Vendored three.js/pixi ship dozens of doc/licence URLs in comments and an xmlns SVG namespace.
+  // A gate that cried wolf on those would be silenced within one release, so the rule matches reference FORMS only.
+  const dir = (html) => {
+    const root = mkdtempSync(path.join(tmpdir(), 'sp-outbound-'));
+    mkdirSync(path.join(root, 'webfonts', 'google'), { recursive: true });
+    writeFileSync(path.join(root, 'index.html'), html);
+    writeFileSync(path.join(root, 'webfonts', 'google', 'google.css'), sheetTextFor(120));
+    for (let i = 0; i < 120; i++) writeFileSync(path.join(root, 'webfonts', 'google', `f${i}.woff2`), 'wOF2');
+    return root;
+  };
+  const hits = (html) => checkPayloadOffline(dir(html)).problems.filter((p) => p.includes('会向站外发请求'));
+
+  test('a real reference to another host is flagged, whatever the form', () => {
+    for (const [label, html] of [
+      ['script src', '<script src="https://cdn.example.com/lib.js"></script>'],
+      ['link href', '<link rel="stylesheet" href="https://fonts.example.com/css2">'],
+      ['css url()', '<style>@font-face{src:url(https://x.example.com/a.woff2)}</style>'],
+      ['fetch()', '<script>fetch("https://api.example.com/ping")</script>'],
+      ['@import', '<style>@import url("https://themes.example.com/a.css");</style>'],
+    ]) {
+      assert.equal(hits(html).length, 1, `${label} 应当被抓住`);
+      assert.match(hits(html)[0], /https:\/\/\S*example/, '报的要能指到那个地址');
+    }
+  });
+
+  test('URLs that never leave the device are NOT flagged (this is what keeps the gate usable)', () => {
+    for (const [label, html] of [
+      ['svg xmlns', '<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>'],
+      ['licence in comment', '/* see https://www.opensource.org/licenses/mit-license and https://github.com/x/y */'],
+      ['doc link in comment', '// details at https://developer.mozilla.org/en-US/docs/Web/API/WebGL'],
+      ['wss to the game server', "<script>new WebSocket('wss://sp.lain42.top/ws')</script>"],
+      ['relative only', '<link href="/css/theme.css"><script src="/js/main.js"></script>'],
+    ]) {
+      assert.deepEqual(hits(html), [], `${label} 不该被当成站外请求`);
+    }
+  });
+
+  test('the shipped payload has zero outbound references (measured, not assumed)', () => {
+    const p = 'D:/Code/_artifacts/payload-c10';
+    if (!existsSync(path.join(p, 'index.html'))) return;      // local scratch tree, absent on CI
+    const r = checkPayloadOffline(p);
+    assert.deepEqual(r.problems.filter((x) => x.includes('会向站外发请求')), [], JSON.stringify(r.problems.slice(0, 3)));
+    // and the previously published one is the red control for this rule
+    const old = 'D:/Code/_artifacts/www-c5';
+    if (!existsSync(path.join(old, 'index.html'))) return;
+    assert.ok(checkPayloadOffline(old).problems.some((x) => x.includes('会向站外发请求')), '旧 payload 必须仍是红的');
   });
 });

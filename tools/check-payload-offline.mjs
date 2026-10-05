@@ -24,6 +24,18 @@ import { fileURLToPath } from 'node:url';
 
 export const FONT_HOST = /fonts\.(googleapis|gstatic)\.com/;
 export const OSS_HOST = /dl\.lain42\.top/;
+/**
+ * Reference forms that actually leave the device. Deliberately NOT a bare-URL grep: vendored three.js/pixi carry
+ * dozens of doc and licence URLs inside comments, and `xmlns="http://www.w3.org/2000/svg"` is an identifier, not a
+ * request — flagging those would train everyone to ignore the gate.
+ */
+export const OUTBOUND = [
+  /(?:href|src|action|poster|data-src)\s*=\s*["'](https?:\/\/[^"'\s]+)/g,
+  /url\(\s*["']?(https?:\/\/[^)'"\s]+)/g,
+  /(?:fetch|import|axios\.get)\s*\(\s*["'](https?:\/\/[^'"\s]+)/g,
+  /new\s+WebSocket\s*\(\s*["'`](https?:\/\/[^'"`\s)]+)/g,
+  /@import\s+(?:url\()?\s*["']?(https?:\/\/[^)'"\s]+)/g,
+];
 /** Text formats that can carry a URL. Binary assets (.png/.woff2/.skel/.mp3 …) are not scanned. */
 export const TEXT_EXT = new Set(['.html', '.css', '.js', '.mjs', '.json', '.svg', '.txt', '.atlas', '.csv']);
 export const SHEET = 'webfonts/google/google.css';
@@ -38,6 +50,10 @@ function collectProblems(read, exists, listDir, listSheetUrls, mirrorNames) {
     if (host) problems.push(`${rel} 引用外部字体主机 ${host[0]}`);
     const oss = OSS_HOST.exec(text);
     if (oss) problems.push(`${rel} 引用 CDN 绝对地址 ${oss[0]}（payload 必须用相对清单，否则离线白屏）`);
+    const outbound = [...new Set(OUTBOUND.flatMap((rx) => [...text.matchAll(rx)].map((m) => m[1])))];
+    if (outbound.length) {
+      problems.push(`${rel} 会向站外发请求：${outbound[0].slice(0, 96)}` + (outbound.length > 1 ? `（另有 ${outbound.length - 1} 处）` : ''));
+    }
   }
 
   if (!exists(SHEET)) {

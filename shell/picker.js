@@ -19,12 +19,14 @@
 //   * probing opens a real /ws socket (the channel the game itself uses), so it needs no CORS headers, and it tries
 //     every guess at once: ws/wss × typed-path/root. A /healthz that answers at all is what turns the bare
 //     "无法连接" into "对方在线，但 /ws 没通", which is the difference the player can act on.
+//   * the fan servers listed in picker-core.js (COMMUNITY_SERVERS) are seeded into the player's own editable list on
+//     the first launch per SEED_VERSION, so a server that goes dark can be deleted and stays deleted.
 
 import { toHttpUrl, toWsUrl } from '../net.js';
 import {
-  BUILTIN_SERVERS, K_AUTOSTART, K_CHOSEN, K_LIST, K_SERVER, NAME_MAX,
-  addressError, ambiguousScheme, autostartOn, cleanName, customFrom, isAndroidUA, orderCandidates, pathOf,
-  probeReason, serverName, shouldShowPicker,
+  BUILTIN_SERVERS, COMMUNITY_SERVERS, K_AUTOSTART, K_CHOSEN, K_LIST, K_SEED, K_SERVER, NAME_MAX, SEED_VERSION,
+  addressError, ambiguousScheme, autostartOn, cleanName, customFrom, isAndroidUA, missingSeeds, orderCandidates,
+  pathOf, probeReason, serverName, shouldShowPicker,
 } from './picker-core.js';
 
 const PROBE_TIMEOUT_MS = 4000;
@@ -74,6 +76,19 @@ const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 /** Custom entries the user added, newest first. */
 function customServers() {
   return customFrom(readItem(K_LIST, 'localStorage'));
+}
+
+/**
+ * Copy the community servers into the player's editable list, once per SEED_VERSION. They go in `K_LIST` rather than
+ * `BUILTIN_SERVERS` so a server that goes dark can be deleted for good — and the marker is what keeps it deleted
+ * instead of coming back on the next launch. Bump SEED_VERSION in picker-core.js to push a new batch.
+ */
+function seedCommunityServers() {
+  if (readItem(K_SEED, 'localStorage') === String(SEED_VERSION)) return;
+  const existing = customServers();
+  const add = missingSeeds(existing, COMMUNITY_SERVERS, (a) => (a.trim() ? toWsUrl(a) : ''));
+  if (add.length) writeItem(K_LIST, JSON.stringify(existing.concat(add)), 'localStorage');
+  writeItem(K_SEED, String(SEED_VERSION), 'localStorage');
 }
 
 /** Every entry the picker lists, de-duplicated on the normalised socket URL. */
@@ -597,4 +612,6 @@ const bootTarget = keyOf(globalThis.__SP_SERVER__);
 const forced = new URLSearchParams(globalThis.location?.search || '').get('pick') === '1';
 const chosenThisSession = readItem(K_CHOSEN, 'sessionStorage') === '1';
 const autostart = autostartOn(readItem(K_AUTOSTART, 'localStorage'), isAndroid());
+// Seeding runs even when the overlay stays hidden: F2 has to find the same list a first launch would have shown.
+seedCommunityServers();
 if (shouldShowPicker({ forced, chosenThisSession, savedAddress, autostart })) showPicker();

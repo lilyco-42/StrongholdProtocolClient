@@ -7,6 +7,7 @@ export const K_SERVER = 'sp.shell.server';       // last chosen address
 export const K_AUTOSTART = 'sp.shell.autostart'; // '1' = skip the picker next launch, '0' = always show
 export const K_LIST = 'sp.shell.list';           // user-added servers: JSON [{ name, address }]
 export const K_CHOSEN = 'sp.shell.chosen';       // sessionStorage: already entered once in this session
+export const K_SEED = 'sp.shell.seed';           // which COMMUNITY_SERVERS batch this install already received
 
 /** Longest stored server name (the picker's "add server" field is capped to this). */
 export const NAME_MAX = 32;
@@ -18,6 +19,46 @@ export const NAME_MAX = 32;
 export const BUILTIN_SERVERS = Object.freeze([
   { address: 'localhost:3000', label: '本机 / 局域网', note: '自己开的服务器' },
 ]);
+
+/** Bump when COMMUNITY_SERVERS gains an entry existing installs should also get (a deleted one stays deleted). */
+export const SEED_VERSION = 1;
+
+/**
+ * Servers run by other people, measured with the shipped picker code on 2026-10-05 (all five opened a `/ws`
+ * handshake; `ark-proto.stardust.matce.cn` answers HTTP but has no game service on `/ws`, and
+ * `xymx1234.github.io/stronghold-standalone/` is a static page, not a server — neither is listed here).
+ *
+ * They are *seeded into the editable list* (`K_LIST`), not added to `BUILTIN_SERVERS`: a server that goes dark must
+ * be something the player can delete for good, and a built-in row cannot be deleted or edited. Addresses below are
+ * pasted as-is by design — the picker tries the typed path *and* the root mount, and three of these five only answer
+ * on the root one.
+ */
+export const COMMUNITY_SERVERS = Object.freeze([
+  { name: '网友服 · misyra', address: 'https://game.misyra.com/play' },
+  { name: '网友服 · rainya', address: 'https://game.rainya.me/play' },
+  { name: '网友服 · rainya:10166', address: 'https://sp.rainya.me:10166/play' },
+  { name: '网友服 · linxia', address: 'https://wei.linxia.dev/' },
+  { name: '网友服 · xiaolubao', address: 'https://game.xiaolubao.com/' },
+]);
+
+/**
+ * The community entries this list does not have yet. `keyOfAddress` decides what counts as the same server —
+ * picker.js passes `js/net.js`'s `toWsUrl`, so an address the player already typed by hand (`host`, `https://host/…`)
+ * never gets a second copy of, while the picker's own `serverList()` additionally de-duplicates on the normalised
+ * socket URL when it renders.
+ * @param {{ address: string }[]} existing
+ * @param {{ name: string, address: string }[]} seed
+ * @param {(address: string) => string} [keyOfAddress]
+ * @returns {{ name: string, address: string }[]}
+ */
+export function missingSeeds(existing, seed, keyOfAddress) {
+  const key = keyOfAddress ?? ((a) => String(a ?? '').trim().toLowerCase());
+  const have = new Set((existing ?? []).map((e) => key(String(e?.address ?? ''))).filter(Boolean));
+  return (seed ?? []).filter((e) => {
+    const address = String(e?.address ?? '').trim();
+    return address && !have.has(key(address));
+  });
+}
 
 /** Android WebView (Capacitor) — no F2 there, so the picker is the only way to switch servers. */
 export function isAndroidUA(ua) {

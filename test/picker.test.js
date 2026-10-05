@@ -9,9 +9,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 import {
-  BUILTIN_SERVERS, K_AUTOSTART, K_CHOSEN, K_LIST, K_SERVER, NAME_MAX,
-  addressError, ambiguousScheme, autostartOn, cleanName, customFrom, isAndroidUA, orderCandidates, otherScheme,
-  pathOf, probeReason, rootWsUrl, serverName, shouldShowPicker,
+  BUILTIN_SERVERS, COMMUNITY_SERVERS, K_AUTOSTART, K_CHOSEN, K_LIST, K_SEED, K_SERVER, NAME_MAX, SEED_VERSION,
+  addressError, ambiguousScheme, autostartOn, cleanName, customFrom, isAndroidUA, missingSeeds, orderCandidates,
+  otherScheme, pathOf, probeReason, rootWsUrl, serverName, shouldShowPicker,
 } from '../shell/picker-core.js';
 
 describe('when the picker is shown', () => {
@@ -116,7 +116,59 @@ describe('server addresses', () => {
   });
 
   test('storage keys are namespaced under sp.shell.* so they never collide with the game"s own keys', () => {
-    for (const k of [K_SERVER, K_AUTOSTART, K_LIST, K_CHOSEN]) assert.match(k, /^sp\.shell\./);
+    for (const k of [K_SERVER, K_AUTOSTART, K_LIST, K_CHOSEN, K_SEED]) assert.match(k, /^sp\.shell\./);
+  });
+});
+
+// The fan-server list shipped inside the client. The addresses themselves were probed with the shipped picker code
+// on 2026-10-05 (see ops docs/09 and the client README); what this lane can pin is that the table is well-formed,
+// that seeding is additive, and that the two hosts measured as *not playable* never creep back in.
+describe('the seeded fan-server list', () => {
+  test('every entry is a usable address with a short name, and none of them is duplicated', () => {
+    assert.ok(COMMUNITY_SERVERS.length >= 3, 'the point of the list is that a fresh install has servers to click');
+    const seen = new Set();
+    for (const e of COMMUNITY_SERVERS) {
+      assert.equal(typeof e.name, 'string');
+      assert.ok(e.name.trim().length > 0, `${e.address} needs a name (an empty one would show the raw URL)`);
+      assert.ok(e.name.length <= NAME_MAX, `${e.name} is longer than the picker's own cap`);
+      assert.equal(addressError(e.address), null, `${e.address} must be an address the picker accepts`);
+      assert.ok(!seen.has(e.address), `${e.address} listed twice`);
+      seen.add(e.address);
+    }
+  });
+
+  test('the two measured-dead addresses stay out of the list', () => {
+    // ark-proto.stardust.matce.cn answers HTTP but has no game service on /ws; xymx1234.github.io is a static page.
+    const all = COMMUNITY_SERVERS.map((e) => e.address.toLowerCase()).join(' ');
+    for (const dead of ['ark-proto', 'stardust', 'github.io', 'xymx1234']) {
+      assert.ok(!all.includes(dead), `${dead} is not a server the client should pre-fill`);
+    }
+  });
+
+  test('seeding a fresh install takes the whole list in order', () => {
+    assert.deepEqual(missingSeeds([], COMMUNITY_SERVERS).map((e) => e.address), COMMUNITY_SERVERS.map((e) => e.address));
+  });
+
+  test('seeding never duplicates an address the player already has', () => {
+    const owned = [{ name: '我自己填的', address: 'https://game.misyra.com/play' }];
+    const add = missingSeeds(owned, COMMUNITY_SERVERS);
+    assert.equal(add.some((e) => e.address.includes('misyra')), false, 'misyra is already there');
+    assert.equal(add.length, COMMUNITY_SERVERS.length - 1, 'everything else still gets seeded');
+    // The picker passes net.js's toWsUrl as the key, so the same server typed another way counts as present too.
+    const key = (a) => a.replace(/^https?:\/\//i, '').toLowerCase();
+    const withBare = [{ name: '', address: 'game.misyra.com/play' }];
+    assert.equal(missingSeeds(withBare, COMMUNITY_SERVERS, key).some((e) => e.address.includes('misyra')), false);
+  });
+
+  test('garbage in the stored list cannot break seeding', () => {
+    assert.deepEqual(missingSeeds(null, null), []);
+    assert.deepEqual(missingSeeds([{ name: '', address: '  ' }], [{ name: 'x', address: '  ' }]), [], 'a blank address is never seeded');
+    assert.deepEqual(missingSeeds([{}], COMMUNITY_SERVERS).length, COMMUNITY_SERVERS.length, 'an entry with no address blocks nothing');
+  });
+
+  test('the seed marker is a version number, so a bump can push a new batch', () => {
+    assert.equal(typeof SEED_VERSION, 'number');
+    assert.ok(Number.isInteger(SEED_VERSION) && SEED_VERSION >= 1, 'picker.js stores it as String(SEED_VERSION)');
   });
 });
 

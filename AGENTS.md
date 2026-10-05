@@ -81,7 +81,7 @@ gh workflow run build-clients.yml -f payload_url=<release 资产 URL> -f expect_
    并**排除混淆变量**：观战按钮的表达式是 `!codeOk || !online || spectateBlocked`，密钥框空着时它本来就是灰的 ——
    我曾据此报过一次假阳性。
 4. 任何状态里提到的文件名/分支/run 号，上面必须有一条命令的输出压着它。没有就先跑。
-5. `node --test` 的通过数要写实际数字，但**条数本身不是判据**（每加一条测试就变）。现测 **87 项 / 87 过**（2026-10-05 本机；带游戏 checkout 时 **101 项 / 101 过**）。
+5. `node --test` 的通过数要写实际数字，但**条数本身不是判据**（每加一条测试就变）。现测 **93 项 / 93 过**（2026-10-05 本机；带游戏 checkout 时 **110 项 / 110 过**）。
    ⚠️ 整个 `describe(..., { skip: ... })` 被跳过时**不进 `skipped` 计数、也不显示在汇总里**，只看数字会以为契约组跑了 —— 判据是行首那个 `﹣`。
    本机 checkout 在 `D:/Code/Stronghold-Protocol-upstream`（`client.config.json` 默认的 `../Stronghold-Protocol` 不存在），
    所以上面两个数字是同一条命令的两种模式：`SP_GAME_ROOT=... npm test` / `npm test`。
@@ -91,6 +91,8 @@ gh workflow run build-clients.yml -f payload_url=<release 资产 URL> -f expect_
    删除 `LONG_CACHE_DIRS` 里的 `webfonts`、把 `build.json` 的 `dirty` 改成 true、或往 workflow 里删一道闸门，都会让对应那条红。
    选择页那条同理，四种改法各让各的红：`orderCandidates` 不补根挂载 → 候选顺序两条红；去掉 `no-cors` 追问 → "在线但 /ws 没通"那条红；
    socket 失败不等 `/healthz` 落定就收 → 同上；`probe` 退回串行 → "四个候选只花一个超时"那条红（四种改法都在这台机器上逐一验证过，改完即恢复）。
+   播种（`seedCommunityServers`）另有三种：不写 `sp.shell.seed` 标记 → 首启那条 + "删了不该回来"那条都红；
+   去重键从 `toWsUrl` 退回裸字符串比较 → "玩家自己填过就不该再来一份"那条红；整段不调用 → 三条全红。
    游戏仓库全量当前 **3643 项 / 3624 过 / 3 失败 / 16 跳过**（2026-10-05 16:41，`3dd1a2c`）：
    并行整跑时红的三条都是 CPU 阈值闸 —— `test/sim/perf.test.js:22`、`test/sim/perf.test.js:43`、`test/sim/robustness.test.js:739`；
    **这批文件单独复跑 37/37 全过**，且本分支没碰 `server/sim/**`、也没改这几个测试文件

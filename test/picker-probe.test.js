@@ -20,7 +20,9 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 import { PATCHED_FILES, applyPayloadPatch, assertPatched } from '../tools/payload-patches.mjs';
 import { SHELL_FILES, shellSource } from '../tools/package-client.mjs';
 import { findGameRoot } from '../tools/game-contract.mjs';
-import { K_CHOSEN, K_SERVER, probeReason } from '../shell/picker-core.js';
+import {
+  COMMUNITY_SERVERS, K_CHOSEN, K_LIST, K_SEED, K_SERVER, SEED_VERSION, probeReason,
+} from '../shell/picker-core.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const GAME_ROOT = (() => {
@@ -94,6 +96,8 @@ function scriptWorld(w = {}) {
 describe('the server probe', { skip: GAME_ROOT ? false : 'no Stronghold-Protocol checkout next to this repo' }, () => {
   let dir = null;
   let picker = null;
+  let payload = null;
+  let loadSeq = 0;
   const realFetch = globalThis.fetch;
   const realWebSocket = globalThis.WebSocket;
 
@@ -101,7 +105,7 @@ describe('the server probe', { skip: GAME_ROOT ? false : 'no Stronghold-Protocol
     dir = mkdtempSync(path.join(tmpdir(), 'sp-picker-'));
     // The payload keeps the game's own depths (`js/net.js` imports `../../shared/constants.js`, which a *browser*
     // clamps to `/shared/…`). On a real filesystem that would escape, so the tree sits one level below `shared/`.
-    const payload = path.join(dir, 'payload');
+    payload = path.join(dir, 'payload');
     for (const f of PATCHED_FILES) {
       const target = path.join(payload, f);
       mkdirSync(path.dirname(target), { recursive: true });
@@ -229,5 +233,52 @@ describe('the server probe', { skip: GAME_ROOT ? false : 'no Stronghold-Protocol
     assert.equal(r.ok, false);
     assert.deepEqual(tried.sockets, []);
     assert.deepEqual(tried.health, []);
+  });
+
+  /**
+   * Load the picker module once against a writable storage stand-in (cache-busted, so each call is a fresh launch).
+   * The session reports "already chosen", so the overlay never mounts and this lane still needs no DOM — while the
+   * module-load seeding runs for real, because it is deliberately outside the show/hide decision.
+   */
+  async function launchWith(store) {
+    globalThis.localStorage = {
+      getItem: (k) => (Object.prototype.hasOwnProperty.call(store, k) ? store[k] : null),
+      setItem: (k, v) => { store[k] = String(v); },
+      removeItem: (k) => { delete store[k]; },
+    };
+    globalThis.sessionStorage = { getItem: (k) => (k === K_CHOSEN ? '1' : null), setItem() {}, removeItem() {} };
+    await import(pathToFileURL(path.join(payload, 'js', 'shell', 'picker.js')).href + `?launch=${++loadSeq}`);
+    return store;
+  }
+
+  test('a first launch gets the fan servers in its own list, plus the marker', async () => {
+    const store = await launchWith({});
+    const list = JSON.parse(store[K_LIST] || '[]');
+    assert.equal(store[K_SEED], String(SEED_VERSION), 'the batch marker is what stops a re-seed later');
+    assert.deepEqual(list.map((e) => e.address), COMMUNITY_SERVERS.map((e) => e.address));
+    assert.ok(list.every((e) => e.name), 'seeded rows need names, or the card shows a bare URL');
+  });
+
+  test('a server the player deleted is not planted back on the next launch', async () => {
+    const store = await launchWith({});
+    const list = JSON.parse(store[K_LIST]);
+    // The picker's own delete path: rewrite K_LIST without that entry, leave the marker alone.
+    const kept = list.filter((e) => !/xiaolubao/.test(e.address));
+    assert.equal(kept.length, list.length - 1, 'the fixture did remove exactly the one row');
+    const next = await launchWith({ ...store, [K_LIST]: JSON.stringify(kept) });
+    const after = JSON.parse(next[K_LIST]);
+    assert.equal(after.length, kept.length, 'seeding must stay silent once the marker is set');
+    assert.equal(after.some((e) => /xiaolubao/.test(e.address)), false, 'the deleted server came back');
+  });
+
+  test('an install that already typed one of them does not get a second copy', async () => {
+    // Deliberately a *different spelling* of a seeded address: picker.js keys the de-dupe on net.js's toWsUrl, so
+    // `wei.linxia.dev` and `https://wei.linxia.dev/` are the same server. Comparing raw strings would fail here.
+    const mine = { name: '我自己加的', address: 'wei.linxia.dev' };
+    const store = await launchWith({ [K_LIST]: JSON.stringify([mine]) });
+    const list = JSON.parse(store[K_LIST]);
+    assert.equal(list.filter((e) => /wei\.linxia\.dev/.test(e.address)).length, 1, 'toWsUrl-keyed de-dupe failed');
+    assert.equal(list[0].name, mine.name, 'the player entry keeps its own name and position');
+    assert.equal(list.length, COMMUNITY_SERVERS.length, 'the rest still gets seeded: 1 kept + 4 added');
   });
 });

@@ -88,7 +88,8 @@ gh workflow run build-clients.yml -f payload_url=<release 资产 URL> -f expect_
   （`tools/check-payload-offline.mjs`，还能 `--zip` 读 APK 的 zip 条目 —— 整包 grep 是 0 命中，条目里才有）会拦住这种"旧 payload 出产物"，而且已在 CI 里咬过：用旧 payload `payload-v0.1.3-c5`
   跑的 run `37270463759` 结论 **failure**，desktop 与 android 两个 job 都恰好死在 `零外部依赖（闸门）`，
   日志点名 `index.html` / `dev/uikit.html` 引用 `fonts.googleapis.com` 且缺 `webfonts/google/google.css`；
-  换成新 payload 就是绿的。网页版那份 `index.html` 仍带外链（线上 0.1.1 的 checkout 是热文件），要随 0.1.3 升级一起换。
+  换成新 payload 就是绿的。网页版那份 `index.html` 仍带外链 —— 2026-10-05 14:20 的覆盖式升级把线上换成了**上游 0.1.3** 的 index.html，
+  我的镜像与 OSS 前端改写都不在那份文件里（运维仓库 `docs/12-prod-0.1.3-overlay.md`），要重放而不是直接编辑热文件。
 - Android 侧 `/media/…` 音频路由：`desktop/serve.mjs` 已实现 `resolveMediaPath`，
   Capacitor 那份静态资源**还没有**等价机制，所以 APK 的 BGM 仍需单独处理。
 - 大厅平台（另一套 Flask 服务，不在本仓库）：注册 400（`site.json` 与 `SKIP_EMAIL_VERIFY` 环境变量不一致）——
@@ -105,11 +106,11 @@ gh workflow run build-clients.yml -f payload_url=<release 资产 URL> -f expect_
 | CI 构建 | run `37225727424`（desktop + android 均 success），触发时传 `expect_app=0.1.3` | `gh run view <id> --json conclusion` —— **不要**用 `gh run watch` 的 shell 退出码 |
 | CI 读的 payload | Release tag `payload-v0.1.3-c5`（游戏代码 = fork 分支 `feat/net-cross-version-capability` @ `a2ccc3a`，`v0.1.3-5-ga2ccc3a`，`dirty:false`） | 产物内 `resources/www/build.json` |
 | **待发布的 payload**（含字体镜像） | 本机 `D:/Code/_artifacts/sp-client-payload-0.1.3-c8.tar.gz`：**218,916,336 B**，sha256 `d31f7d3c8f8b357f9d285d843dd20b694cd37a9b66ac70d3a3911ae7996caa04`，游戏代码 `v0.1.3-8-g86719d1`（4366 个文件 / 293.0 MB，含 `webfonts/google/` 114 条目）。**尚未上传**，上传与 `gh workflow run` 需要人点头 | `node tools/check-payload-offline.mjs D:/Code/_artifacts/payload-c8`（727 个文本文件、112 woff2、0 问题）；`tar -xOf … ./build.json` 读 `game.describe` |
-| 线上服务器 | 仍是 **0.1.1**（`/healthz` 的 `app`），未重启、未改动 | `systemctl show stronghold -p ExecMainStartTimestamp` 应仍是 2026-10-04 20:03:41 |
+| 线上服务器 | **0.1.3**（`/healthz.app`），2026-10-05 14:20:24 CST 由**别人**覆盖式部署（`git log` 仍 8b10625、238 个 `M`、没备份）| `systemctl show stronghold -p ExecMainStartTimestamp`；`grep -rn 'room.spectate' server shared \| wc -l` 应 >0（0.1.1 是 0） |
 
 CI 现在有四道闸门：payload 完整性、`expect_app` 版本、`零外部依赖（闸门）`（暂存 payload）、`零外部依赖（产物内，闸门）`（出厂字节：桌面扫 `resources/www`，APK 用 `--zip` 按条目扫）。产物内必须能查到这三样（每次发布都重验，别沿用旧结论）：`app.asar` 里 `resolveMediaPath` ≥1；payload `js/net.js` 里 `serverKey`；APK 内 `assets/public/js/runtime-config.js` 含 `__SP_MEDIA_ALIAS__ = false`（桌面那份必须**没有**）。
 
-跨版本识别在生产上的实测（同一份产物）：连线上 0.1.1 → `serverApp='0.1.1'`、`probeFailed:false`，观战/移出成员/移出观战者三处 `ok:false reason:'older-server'`（点之前就识别到，因为生产 `/healthz` 有 CORS），`room.join` 仍 `ok:true`；连 0.1.3 → `确认本局信息` 正常开局。
+跨版本识别在生产上的实测（同一份产物，**当时的**线上是 0.1.1；14:20 之后线上是 0.1.3，所以这三处入口应当自行解禁 —— 复测以 `/healthz.app` 为准）：连线上 0.1.1 → `serverApp='0.1.1'`、`probeFailed:false`，观战/移出成员/移出观战者三处 `ok:false reason:'older-server'`（点之前就识别到，因为生产 `/healthz` 有 CORS），`room.join` 仍 `ok:true`；连 0.1.3 → `确认本局信息` 正常开局。
 
 自托管字体（已定案，不是待办）：**带 Chrome UA** 请求那条 css2 会得到 **421 个 @font-face / 112 个 woff2 / 4.84 MB**
 （不带 UA 的 11 个 / 43.3 MB 是未切片的旧格式，别拿它做决策）。游戏仓库 `tools/fetch-webfonts.mjs` 按这个把整套字形

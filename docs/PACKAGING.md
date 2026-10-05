@@ -211,7 +211,45 @@ $env:JAVA_HOME = "C:\Program Files\Java\jdk-21"
 
 macOS / Linux 同理，把 `commandlinetools-win` 换成 `commandlinetools-mac` / `commandlinetools-linux`，SDK 默认在 `~/Library/Android/sdk` / `~/Android/Sdk`。`tools/package-android.mjs` 会自己找 `ANDROID_HOME` / `ANDROID_SDK_ROOT` / 默认目录，并写 `mobile/android/local.properties`。
 
+## 5.5 iOS 版（未签名 `.ipa`，玩家自己签）
+
+有玩家用 iPhone，所以 2026-10-06 加了这一路。**它和另两路的根本差别是签名**：iOS 上任何 app 都要有签名才能装，
+而我们没有 Apple 开发者账号，也不打算为这个 GPL 同人项目去申请 —— 所以 CI 产出**未签名 .ipa**，
+玩家用自己的**免费 Apple ID** 签了再装（AltServer / Sideloadly / SideStore 任一，需要一台电脑）。
+免费签名的两条限制是 Apple 定的：**7 天到期**、**同一 Apple ID 最多 3 个自签应用**。
+
+**工程与产物**
+
+| 项 | 事实 |
+|---|---|
+| 生成方式 | `cd mobile && npm i -D @capacitor/ios@^8.5.2 && npx cap add ios` → `mobile/ios/`（20 个文件入库；Capacitor 自带的 `mobile/ios/.gitignore` 已挡住 `App/public`、`capacitor.config.json`、`Pods`、`xcuserdata`，`git add -n` 逐条核过） |
+| bundle id / 最低系统 | `site.starst.stronghold`（与安卓同一个 appId）；`CapApp-SPM/Package.swift` 声明 `.iOS(.v15)` → **iOS 15 起**，运行时按 `exact: 8.5.2` 从 GitHub 拉 `capacitor-swift-pm` |
+| **共享 scheme 要手写提交** | 模板**不带** `.xcscheme`。Xcode 打开工程时会自建，但纯 CI 环境不会 —— 少了 `App.xcodeproj/xcshareddata/xcschemes/App.xcscheme`，`xcodebuild -scheme App` 就直接找不到 scheme。里面 `BlueprintIdentifier` 是从 `project.pbxproj` 读出来的 target UUID（`504EC303…`，product `App.app`），别照抄网上的示例 |
+| `Info.plist` 三处改动 | ① `NSAppTransportSecurity/NSAllowsArbitraryLoads=true`：iOS 默认禁明文，玩家自建服常常是 `ws://192.168.1.9:3000`、frp 的 `ws://211.71.60.138:3000`，不放开连握手都发不出去 —— 对应安卓的 `android.allowMixedContent`；② 方向只留 `LandscapeLeft/Right`（模板带 Portrait，而游戏是横屏设计，安卓侧是 `screenOrientation="sensorLandscape"`）；③ `UIStatusBarHidden=true` + `UIViewControllerBasedStatusBarAppearance=false`，对齐安卓的隐藏 system bars。入口页 meta 已带 `viewport-fit=cover`、`css/devices.css` 用 `env(safe-area-inset-*)`，所以画进刘海区是安全的 |
+| 音频 | 不需要额外做：`public/js/audio.js` 已经在首次手势（`pointerdown/touchend/click/keydown`）时建 AudioContext，注释里明确写了 iOS Safari 只认 `touchend/click` 这个坑。表现就是"点一下屏幕之后才有 BGM" |
+
+**CI（`build-clients.yml` 的 `ios` job，`runs-on: macos-latest`）**
+
+前置四道闸门与 desktop/android **逐字一致**（GitHub 的 workflow 不支持 YAML 锚点，只能抄；抄漏一处就是发一份没把关的包）。
+之后：`npm install` → **往 `runtime-config.js` 追加 `__SP_MEDIA_ALIAS__ = false`**（WKWebView 同样是纯静态宿主，
+不关掉 `/media/…` 就 404，装机版全程静音 —— 和安卓那一步同一个道理，见 §5）→ `npx cap sync ios` →
+`xcodebuild … CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY=` → 把 `App.app` 放进 `Payload/` 用 `ditto -c -k` 打成 .ipa。
+
+产物内闸门扫的是 **`.app` 里的 `public/`**（那一步先 `find` 目录、再断言里面有 `index.html`、有 `js/shell/picker.js`、
+`picker-core.js` 里有 `COMMUNITY_SERVERS`）—— 不这么写就可能拿一个空目录"通过"闸门。
+
+**测试钉住的东西**（`test/packaging.test.js`）：ios job 存在且跑在 macOS runner、四道前置闸门都在、
+media-alias flag 有写、**签名是关的**、共享 scheme 在库里、`Info.plist` 那三处。两个教训记在这里：
+① 原来"android job 读到文件末尾"的切片在有第三个 job 后会让 android 的断言在 ios 的步骤上蒙对，已改成按 job 边界切；
+② 第一版"不签名"的断言是整段匹配 `CODE_SIGNING_ALLOWED=NO`，结果命中了**注释里**那句话，把真实参数删掉测试照样绿 ——
+现在只匹配非注释行，并用"改成要签名 / 只在注释里留着不签名"两种变异各验过一次。
+
+**已知没做**：应用图标还是 Capacitor 模板的默认图（安卓侧同样是模板 `ic_launcher`，两边一致），要做要出 iOS 全套
+`AppIcon.appiconset` + 启动图；这一步等有玩家反馈"找不到图标"再做。
+**本地不编**：iOS 只能在 macOS 上编，正好符合"产物一律在 Actions 里出"的规矩（§3）。
+
 ## 6. 选择游戏模式 / 服务器（进游戏前）
+
 打包客户端里多了一个 Minecraft 风格的菜单（`shell/picker.js` + `shell/picker-core.js`，被复制成 payload 里的 `/js/shell/*`），它在 `/js/main.js` 之前执行、盖住启动画面，把选择写进 `localStorage`（`sp.shell.*`）后重载页面。`js/net.js` 只认 `globalThis.__SP_SERVER__`，菜单只是给它赋值，所以不需要再改游戏源码。
 
 | 行为 | 说明 |

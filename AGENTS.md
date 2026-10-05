@@ -81,11 +81,13 @@ gh workflow run build-clients.yml -f payload_url=<release 资产 URL> -f expect_
    并**排除混淆变量**：观战按钮的表达式是 `!codeOk || !online || spectateBlocked`，密钥框空着时它本来就是灰的 ——
    我曾据此报过一次假阳性。
 4. 任何状态里提到的文件名/分支/run 号，上面必须有一条命令的输出压着它。没有就先跑。
-5. `node --test` 的通过数要写实际数字，但**条数本身不是判据**（每加一条测试就变）。现测 **93 项 / 93 过**（2026-10-05 本机；带游戏 checkout 时 **110 项 / 110 过**）。
+5. `node --test` 的通过数要写实际数字，但**条数本身不是判据**（每加一条测试就变）。现测 **94 项 / 94 过**（2026-10-06 本机；带游戏 checkout 时 **111 项 / 111 过**）。
    ⚠️ 整个 `describe(..., { skip: ... })` 被跳过时**不进 `skipped` 计数、也不显示在汇总里**，只看数字会以为契约组跑了 —— 判据是行首那个 `﹣`。
    本机 checkout 在 `D:/Code/Stronghold-Protocol-upstream`（`client.config.json` 默认的 `../Stronghold-Protocol` 不存在），
    所以上面两个数字是同一条命令的两种模式：`SP_GAME_ROOT=... npm test` / `npm test`。
    要紧的是这几组判据都在测试里：`game-client.patch` 的 3 文件 7 hunk、四道 payload/产物闸门各自在 workflow 里存在且顺序对、
+   **三条产物路各自都要有"产物内闸门"且排在真编出字节的那步之后**（desktop / android / ios 三条，切片必须按 job 边界切，
+   不然第三个 job 会让前一条的断言蒙对）、
    `__SP_MEDIA_ALIAS__` 两个宿主各写各的、镜像字体的三条行为道（壳发镜像的 mime+长缓存+逃逸、纯静态等价道、payload 出处），
    以及离线闸门的引用形式表（含**协议相对** `//host` 一族，且明确不拦 xmlns 与注释里的裸 URL）。
    删除 `LONG_CACHE_DIRS` 里的 `webfonts`、把 `build.json` 的 `dirty` 改成 true、或往 workflow 里删一道闸门，都会让对应那条红。
@@ -93,6 +95,10 @@ gh workflow run build-clients.yml -f payload_url=<release 资产 URL> -f expect_
    socket 失败不等 `/healthz` 落定就收 → 同上；`probe` 退回串行 → "四个候选只花一个超时"那条红（四种改法都在这台机器上逐一验证过，改完即恢复）。
    播种（`seedCommunityServers`）另有三种：不写 `sp.shell.seed` 标记 → 首启那条 + "删了不该回来"那条都红；
    去重键从 `toWsUrl` 退回裸字符串比较 → "玩家自己填过就不该再来一份"那条红；整段不调用 → 三条全红。
+   iOS 那条（`the iOS lane …`）也用变异验过：删 ATS、把竖屏加回来、把 xcodebuild 改成要签名，各让那条红。
+   ⚠️ 但**第一版"不签名"的断言是废的** —— 它整段匹配 `CODE_SIGNING_ALLOWED=NO`，而那句话在**注释**里也写着，
+   所以把真实参数删掉测试照样绿。改成"先滤掉注释行再匹配"才拦住。写文字型守卫时记住这条：
+   **要匹配的短语必须只出现在被守的地方**，否则你钉住的是注释而不是行为。
    游戏仓库全量当前 **3643 项 / 3624 过 / 3 失败 / 16 跳过**（2026-10-05 16:41，`3dd1a2c`）：
    并行整跑时红的三条都是 CPU 阈值闸 —— `test/sim/perf.test.js:22`、`test/sim/perf.test.js:43`、`test/sim/robustness.test.js:739`；
    **这批文件单独复跑 37/37 全过**，且本分支没碰 `server/sim/**`、也没改这几个测试文件

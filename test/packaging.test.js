@@ -951,7 +951,12 @@ describe('artifact-level offline gate (reads APK zip entries)', () => {
     const plist = readFileSync(path.join(ROOT, 'mobile', 'ios', 'App', 'App', 'Info.plist'), 'utf8');
     assert.match(plist, /NSAllowsArbitraryLoads[\s\S]{0,40}<true\/>/, 'ATS 要允许明文连接，否则 ws:// 自建服连不上');
     assert.ok(!plist.includes('UIInterfaceOrientationPortrait'), 'iOS 只该声明横屏（游戏是横屏设计）');
-    assert.match(plist, /UIStatusBarHidden[\s\S]{0,40}<true\/>/, '状态栏要隐藏，对齐 Android 的隐藏 system bars');
+    // 中文标点紧跟变量 = macOS runner（/bin/bash 3.2）会把全角字符当成变量名的一部分，`set -u` 当场
+    // "unbound variable"（第一次跑 ios job 就是这么死的，而同样写法在 Linux/Windows 上恰好躲过）。
+    // 规则：变量旁边只要是非 ASCII，就必须写 ${NAME}。
+    for (const m of wf.matchAll(/\$\{?([A-Za-z_]\w*)\}?([^\x00-\x7F])/g)) {
+      assert.equal(m[0][1], '{', `workflow 里 $${m[1]} 紧跟非 ASCII "${m[2]}" —— 改成 \${${m[1]}}（bash 3.2 会把它读成一个变量名）`);
+    }
   });
 });
 

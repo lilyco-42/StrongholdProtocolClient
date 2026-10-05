@@ -49,6 +49,26 @@ gh api repos/lilyco-42/StrongholdProtocolClient/releases/tags/v0.1.3-c11 --jq '.
 4. 想加自己知道的别的服：点**添加服务器**，名字随便填，地址**直接粘贴别人给你的网页链接**就行（`https://host/play` 这种也认）——**不用写 `ws://` 前缀**，也不用猜它挂在根路径还是 `/play`，程序两种都试。
 5. 之后想换服务器：桌面按 **F2**（或给 exe 加 `--choose-server`）；手机每次都回到这个菜单，属于有意为之——手机没有 F2，免得选完回不去。
 
+### iPhone 玩家看这里（.ipa 要自己签）
+
+安卓和 Windows 是下完就能装；**iOS 不行** —— 苹果要求每个 app 都有签名。我们**没有**开发者账号，也不会去向苹果申请，
+所以发的是**未签名 `.ipa`**，由玩家用**自己的免费 Apple ID** 签一下再装（工具：AltServer / Sideloadly / SideStore 任一，
+需要一台电脑）。这是 Apple 侧的规则，不是我们偷懒。
+
+| 你要知道的 | 事实 |
+|---|---|
+| 最低系统 | **iOS 15 及以上**（Capacitor 8.5.2 的 SPM 声明 `.iOS(.v15)`，不是随手写的数字） |
+| 有效期 | 免费 Apple ID 签出来的包 **7 天过期**，到期要连电脑重签一次 |
+| 数量限制 | 同一个免费 Apple ID 最多 **3 个**自签应用（其中还要占一个给签名工具本身） |
+| 体积 | 约 300 MB（美术音频全在包里，进对局不下载），建议 WiFi 下装，手机留出 1 GB 空闲 |
+| 声音 | 首次点一下屏幕才有 BGM —— iOS 要求音频必须由用户手势解锁，游戏里已做（`audio.js` 的 `pointerdown/touchend/click/keydown`） |
+| 方向 | 锁横屏（`Info.plist` 只声明 LandscapeLeft/Right）；刘海区已按 `viewport-fit=cover` + safe-area 处理 |
+| 连自建服 | 已放开 ATS，所以 `ws://192.168.1.9:3000` 这种明文地址能连（对应安卓的 `allowMixedContent`） |
+
+下载入口和 exe/apk 在同一个 Release 页（文件名形如 `Stronghold-<版本>-ios-unsigned.ipa`），
+GitHub 与 OSS 两条地址的选法见上面那张表。**签名请自己完成：我们不提供证书、不代签、也不要拿这个包去上架** ——
+包里的《明日方舟》素材版权归鹰角/Yostar，仅供个人非商业自用。
+
 ### 桌面版几个省事的小知识
 
 - **一定要整个文件夹一起用**。只把 `StrongholdProtocol.exe` 拷走会打不开（缺 DLL 和 `resources/`）。换机器就重新解压一份，别拷单个 exe。
@@ -103,10 +123,11 @@ npm run server:status -- --watch --under 40             # 蹲空窗：humans ≤
 | `tools/package-client.mjs` | 把游戏仓库的挂载点摊平成 `build/client/www`，生成 `data.js` / `js/runtime-config.js` / `js/shell/*` / `css/shell-display.css` / `build.json`，并应用 payload 补丁 |
 | `tools/game-contract.mjs` | 游戏仓库路径解析 + `DATA_SHIM_JS` / `SIM_PRIVATE` 的对照校验 + 版本读取 |
 | `tools/payload-patches.mjs`、`tools/unified-diff.mjs` | 把 `patches/game-client.patch` 打在 payload 副本上（自带极简 diff 应用器，不依赖 git） |
-| `patches/game-client.patch` | 客户端改动（3 个文件、7 个 hunk —— `index.html` 2 / `js/net.js` 3 / `js/screens/room.js` 2，见下），`git diff` 生成 || `shell/picker.js`、`shell/picker-core.js` | 端侧进游戏前的菜单：主页"单人游戏 / 多人游戏"，多人页可添加服务器（名称 + 地址）、直接连接、探测服务器并记住上次选择；`picker-core.js` 是纯逻辑（可单测） |
+| `patches/game-client.patch` | 客户端改动（3 个文件、7 个 hunk —— `index.html` 2 / `js/net.js` 3 / `js/screens/room.js` 2，见下），`git diff` 生成 |
+| `shell/picker.js`、`shell/picker-core.js` | 端侧进游戏前的菜单：主页"单人游戏 / 多人游戏"，多人页可添加服务器（名称 + 地址）、直接连接、探测服务器（协议 × 挂载路径同时试）并记住上次选择，首次启动把实测能连的网友服播种进玩家自己那份可删列表；`picker-core.js` 是纯逻辑（可单测） |
 | `shell/display.css` | 端侧显示修正：横屏手机的 HUD/棋盘比例（见下"手机端适配"） |
 | `desktop/` | Electron 壳：只监听 `127.0.0.1` 的静态服务（固定端口 47821，让 `localStorage` 跨重启保留，见 §4.4）+ 窗口；`icon.ico`。默认出**目录版**（`win-unpacked/`），`--portable` 才出单文件 exe。日志在 `%APPDATA%\StrongholdProtocol\client.log`（见 §4.3） |
-| `mobile/` | Capacitor 工程（`webDir` → `../build/client/www`）+ 生成的 `android/` Gradle 工程 |
+| `mobile/` | Capacitor 工程（`webDir` → `../build/client/www`）+ 生成的 `android/` Gradle 工程与 `ios/` Xcode 工程（iOS 出**未签名 .ipa**，玩家自签，见 [docs/PACKAGING.md](docs/PACKAGING.md) §5.5） |
 | `client.config.json` | `gameRoot`、`defaultServer` |
 | `tools/package-release.mjs` | 一键发布驱动：读上游 `APP_VERSION` → 对齐本仓库版本号 → 跑测试 → 打桌面 + APK → 复制到 `build/dist/` → `git commit`（入口 `package.bat` / `package.sh`，见 [docs/PACKAGING.md](docs/PACKAGING.md) §13） |
 | `tools/server-status.mjs` | 查服务器忙不忙（`/healthz`）：单次采样、滚动观察、`--under N` 等空窗（见 §11） |

@@ -86,12 +86,12 @@ jobs:
           GOT_SERVER=$(node -e 'console.log(require("./build/client/www/build.json").server)')
           echo "payload: game.app=$APP server=$GOT_SERVER ；本仓库 version=$REPO"
           if [ -n "$EXPECT" ]; then
-            [ "$APP" = "$EXPECT" ] || { echo "闸门：要求 expect_app=$EXPECT，payload 实为 $APP"; exit 1; }
+            [ "$APP" = "$EXPECT" ] || { echo "闸门：要求 expect_app=${EXPECT}，payload 实为 $APP"; exit 1; }
           else
-            [ "$APP" = "$REPO" ] || { echo "闸门：payload 是 $APP，本仓库已对齐 $REPO —— 换 payload，或传 expect_app=$APP 明确接受"; exit 1; }
+            [ "$APP" = "$REPO" ] || { echo "闸门：payload 是 ${APP}，本仓库已对齐 $REPO —— 换 payload，或传 expect_app=$APP 明确接受"; exit 1; }
           fi
           if [ -n "$WANT_SERVER" ]; then
-            [ "$GOT_SERVER" = "$WANT_SERVER" ] || { echo "闸门：要求 server=$WANT_SERVER，payload 实为 $GOT_SERVER"; exit 1; }
+            [ "$GOT_SERVER" = "$WANT_SERVER" ] || { echo "闸门：要求 server=${WANT_SERVER}，payload 实为 $GOT_SERVER"; exit 1; }
           fi
 
       # 装机玩家可能在 LAN、飞机上、或根本连不上字体主机；payload 里出现第三方主机就是回归（旧产物确实带着它出门）。
@@ -206,12 +206,12 @@ jobs:
           GOT_SERVER=$(node -e 'console.log(require("./build/client/www/build.json").server)')
           echo "payload: game.app=$APP server=$GOT_SERVER ；本仓库 version=$REPO"
           if [ -n "$EXPECT" ]; then
-            [ "$APP" = "$EXPECT" ] || { echo "闸门：要求 expect_app=$EXPECT，payload 实为 $APP"; exit 1; }
+            [ "$APP" = "$EXPECT" ] || { echo "闸门：要求 expect_app=${EXPECT}，payload 实为 $APP"; exit 1; }
           else
-            [ "$APP" = "$REPO" ] || { echo "闸门：payload 是 $APP，本仓库已对齐 $REPO —— 换 payload，或传 expect_app=$APP 明确接受"; exit 1; }
+            [ "$APP" = "$REPO" ] || { echo "闸门：payload 是 ${APP}，本仓库已对齐 $REPO —— 换 payload，或传 expect_app=$APP 明确接受"; exit 1; }
           fi
           if [ -n "$WANT_SERVER" ]; then
-            [ "$GOT_SERVER" = "$WANT_SERVER" ] || { echo "闸门：要求 server=$WANT_SERVER，payload 实为 $GOT_SERVER"; exit 1; }
+            [ "$GOT_SERVER" = "$WANT_SERVER" ] || { echo "闸门：要求 server=${WANT_SERVER}，payload 实为 $GOT_SERVER"; exit 1; }
           fi
 
       # 装机玩家可能在 LAN、飞机上、或根本连不上字体主机；payload 里出现第三方主机就是回归（旧产物确实带着它出门）。
@@ -316,12 +316,12 @@ jobs:
           GOT_SERVER=$(node -e 'console.log(require("./build/client/www/build.json").server)')
           echo "payload: game.app=$APP server=$GOT_SERVER ；本仓库 version=$REPO"
           if [ -n "$EXPECT" ]; then
-            [ "$APP" = "$EXPECT" ] || { echo "闸门：要求 expect_app=$EXPECT，payload 实为 $APP"; exit 1; }
+            [ "$APP" = "$EXPECT" ] || { echo "闸门：要求 expect_app=${EXPECT}，payload 实为 $APP"; exit 1; }
           else
-            [ "$APP" = "$REPO" ] || { echo "闸门：payload 是 $APP，本仓库已对齐 $REPO —— 换 payload，或传 expect_app=$APP 明确接受"; exit 1; }
+            [ "$APP" = "$REPO" ] || { echo "闸门：payload 是 ${APP}，本仓库已对齐 $REPO —— 换 payload，或传 expect_app=$APP 明确接受"; exit 1; }
           fi
           if [ -n "$WANT_SERVER" ]; then
-            [ "$GOT_SERVER" = "$WANT_SERVER" ] || { echo "闸门：要求 server=$WANT_SERVER，payload 实为 $GOT_SERVER"; exit 1; }
+            [ "$GOT_SERVER" = "$WANT_SERVER" ] || { echo "闸门：要求 server=${WANT_SERVER}，payload 实为 $GOT_SERVER"; exit 1; }
           fi
 
       - name: payload 出处（闸门）
@@ -371,7 +371,7 @@ jobs:
           WWW=$(find "$APP" -maxdepth 1 -type d -name public | head -1)
           test -n "$WWW" || { echo "在 .app 里找不到 public/ 目录"; ls "$APP"; exit 1; }
           test -f "$WWW/index.html" || { echo "$WWW 里没有 index.html"; exit 1; }
-          echo "包内 Web 资源: $WWW（index.html $(wc -c < "$WWW/index.html") B）"
+          echo "包内 Web 资源: ${WWW}（index.html $(wc -c < "$WWW/index.html") B）"
           node tools/check-payload-offline.mjs "$WWW"
           test -f "$WWW/js/shell/picker.js" || { echo "包里没选择页"; exit 1; }
           grep -q "COMMUNITY_SERVERS" "$WWW/js/shell/picker-core.js" || { echo "包里没网友服播种表"; exit 1; }

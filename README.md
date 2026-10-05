@@ -19,18 +19,25 @@ npm test                    # 打包流程的单元/契约测试（无游戏 che
 
 ## 玩家上手（不用会编译，只要装和玩）
 
-东西在 GitHub 的 **Releases** 里（仓库页 → Releases → 最新的 `v0.1.3-compat`），一共两个文件，下自己那台设备要用的那个：
+东西在 GitHub 的 **Releases** 里（仓库页 → Releases → 最新的 `v0.1.3-c11`），一共两个文件，下自己那台设备要用的那个：
 
 | 你要玩的设备 | 下载 | 大小 | 怎么装 |
 |---|---|---|---|
-| Windows 10/11（64 位） | `StrongholdProtocol-desktop-win-x64-0.1.3-compat.zip` | 353,439,776 B（约 337 MiB） | 解压，**整个文件夹一起放着**，双击里面的 `StrongholdProtocol.exe` |
-| 安卓手机（Android 7.0 及以上） | `Stronghold-0.1.3-compat-android-debug.apk` | 224,848,906 B（约 214 MiB） | 传到手机 → 点开除 → 允许"未知来源/安装未知应用" |
+| Windows 10/11（64 位） | `StrongholdProtocol-desktop-win-x64-0.1.3-c11.zip` | 360,850,482 B（约 344 MiB） | 解压，**整个文件夹一起放着**，双击里面的 `StrongholdProtocol.exe` |
+| 安卓手机（Android 7.0 及以上） | `Stronghold-0.1.3-c11-android-debug.apk` | 232,320,951 B（约 222 MiB） | 传到手机 → 点开除 → 允许"未知来源/安装未知应用" |
+
+国内下载慢就用 OSS 镜像（同一批字节，文件名一致）：
+
+```
+https://dl.lain42.top/downloads/stronghold-protocol/0.1.3-c11/StrongholdProtocol-desktop-win-x64-0.1.3-c11.zip
+https://dl.lain42.top/downloads/stronghold-protocol/0.1.3-c11/Stronghold-0.1.3-c11-android-debug.apk
+```
 
 不确定下到的文件是不是完好的，对一下指纹（GitHub 每个资产的 `digest` 就是 sha256）：
 
 ```
-sha256sum StrongholdProtocol-desktop-win-x64-0.1.3-compat.zip
-gh api repos/lilyco-42/StrongholdProtocolClient/releases/tags/v0.1.3-compat --jq '.assets[]|[.name,.digest]|@tsv'
+sha256sum StrongholdProtocol-desktop-win-x64-0.1.3-c11.zip
+gh api repos/lilyco-42/StrongholdProtocolClient/releases/tags/v0.1.3-c11 --jq '.assets[]|[.name,.digest]|@tsv'
 ```
 两个 sha256 必须**逐字节相等**才算下载完好（不相等多半是没下全，重下即可）。
 

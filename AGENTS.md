@@ -114,19 +114,20 @@ gh workflow run build-clients.yml -f payload_url=<release 资产 URL> -f expect_
 | CI 构建 | run `37225727424`（desktop + android 均 success），触发时传 `expect_app=0.1.3` | `gh run view <id> --json conclusion` —— **不要**用 `gh run watch` 的 shell 退出码 |
 | CI 读的 payload | Release tag `payload-v0.1.3-c5`（游戏代码 = fork 分支 `feat/net-cross-version-capability` @ `a2ccc3a`，`v0.1.3-5-ga2ccc3a`，`dirty:false`） | 产物内 `resources/www/build.json` |
 | **待发布的 payload**（含字体镜像） | 本机 `D:/Code/_artifacts/sp-client-payload-0.1.3-c10.tar.gz`：**221,350,850 B**，sha256 `234ee9625fb844789d82289cad4f9a2bdaf491c622db8c2151eea752ff1fec36`，游戏代码 `v0.1.3-16-g603b94c`（4368 个文件 / 295.3 MB，`webfonts/google/` 114 条目，含 #110 新增的 2 条 corrosion BGM）。c8（4366 文件 / `v0.1.3-8-g86719d1`）在合并上游 `bd892a4` 之后**已作废**；c9 也随之作废 —— 期间有人往本仓库推了 `f101ef3`（版本号对齐 0.1.3 + 重新生成 `patches/game-client.patch`），payload 是在**合并之后的仓库状态**上重打的（补丁仍是 3 文件 7 hunk，对 fork 树与纯净上游树都干净可打）。**尚未上传**，上传与 `gh workflow run` 需要人点头 | `node tools/check-payload-offline.mjs D:/Code/_artifacts/payload-c10`（0 问题）；`tar -xOf … ./build.json` 读 `game.describe`；`tar -tzf … | grep -c corrosion` 应为 2 |
-| 线上服务器 | **0.1.3**（`/healthz.app`），2026-10-05 14:20:24 CST 由**别人**覆盖式部署（`git log` 仍 8b10625、238 个 `M`、没备份）| `systemctl show stronghold -p ExecMainStartTimestamp`；`grep -rn 'room.spectate' server shared \| wc -l` 应 >0（0.1.1 是 0） |
+| 线上服务器 | **0.1.3**（`/healthz.app`），且**线级能力已补齐**：15:59 实测三个 0.1.3 动词全部 `handled`（14:20:24 CST 别人覆盖式部署，15:33:25 CST 又重启过一次）| `systemctl show stronghold -p ExecMainStartTimestamp`；`node ../lain42-stronghold-ops/scripts/probe-server-capability.mjs wss://sp.lain42.top/ws room.spectate room.kick room.removeSpectator room.join room.notARealVerb` → rc=0。**注意**别拿线上那份 checkout 的 `git log` 当版本证据（HEAD 仍 `8b10625` 而有 177 个 ` M`），且 `shared/protocol.js`（md5 `a17f47ae…`）比 v0.1.3 多一条手写的 `hello.z` 校验 —— 整份覆盖会冲掉，详见运维 `docs/12` §5 |
 
 CI 现在有四道闸门：payload 完整性、`expect_app` 版本、`零外部依赖（闸门）`（暂存 payload）、`零外部依赖（产物内，闸门）`（出厂字节：桌面扫 `resources/www`，APK 用 `--zip` 按条目扫）。产物内必须能查到这三样（每次发布都重验，别沿用旧结论）：`app.asar` 里 `resolveMediaPath` ≥1；payload `js/net.js` 里 `serverKey`；APK 内 `assets/public/js/runtime-config.js` 含 `__SP_MEDIA_ALIAS__ = false`（桌面那份必须**没有**）。
 
 跨版本识别在生产上的实测（同一份产物，当时线上是 0.1.1）：连线上 0.1.1 → `serverApp='0.1.1'`、`probeFailed:false`，观战/移出成员/移出观战者三处 `ok:false reason:'older-server'`（点之前就识别到，因为生产 `/healthz` 有 CORS），`room.join` 仍 `ok:true`；连 0.1.3 → `确认本局信息` 正常开局。
 
-⚠️ **`/healthz.app` 不等于服务器能力**（2026-10-05 15:09 实测推翻了我自己先前那句"14:20 之后会自然解禁"）：
-线上 `/healthz.app` 报 `0.1.3`，但真 socket 问 `room.spectate` / `room.kick` / `room.removeSpectator` 三个全部回
+⚠️ **`/healthz.app` 不等于服务器能力**（2026-10-05 一天里两个答案都实测到过，所以这条只能现跑、不能引用文档）：
+15:09 线上 `/healthz.app` 报 `0.1.3`，但真 socket 问 `room.spectate` / `room.kick` / `room.removeSpectator` 三个全部回
 `BAD_MSG unknown type …`，而 `room.join` 回业务级 `ROOM_NOT_FOUND` —— 因为运维那两次部署是混合文件
 （`server/lobby.js` 已 0.1.3、`shared/protocol.js` 还是 0.1.1，`server/net.js:587` 查的是后者那张 `C2S` 表）。
-所以对客户端的实际行为是：**版本号点亮入口 → 玩家点一次拿到报错 → 被动学习才灰掉**。能自纠，但会多点一次。
+**15:59 复测同一条命令：四个全部 `handled`、rc=0**（15:33:25 CST 有人重启过服务，本仓库这边全程只读没动它），
+那张 `C2S` 表现在认得三个动词 —— 也就是对**生产**不再需要"点一次才灰"，被动学习那条路留给更老的自建服与分叉。
 判定别只看版本号，用运维仓库的 `probe-server-capability.mjs`（自带正控制；注意 hello 的 `name` 要短，
-`'CapabilityProbe'` 会收不到 welcome、探测全超时）。
+`'CapabilityProbe'` 会收不到 welcome、探测全超时；脚本已改成**正控制不计入缺失能力**，早先每一次运行都固定报"缺 1 个"）。
 
 自托管字体（已定案，不是待办）：**带 Chrome UA** 请求那条 css2 会得到 **421 个 @font-face / 112 个 woff2 / 4.84 MB**
 （不带 UA 的 11 个 / 43.3 MB 是未切片的旧格式，别拿它做决策）。游戏仓库 `tools/fetch-webfonts.mjs` 按这个把整套字形

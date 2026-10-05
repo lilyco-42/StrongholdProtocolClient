@@ -85,7 +85,10 @@ gh workflow run build-clients.yml -f payload_url=<release 资产 URL> -f expect_
 
 - 打包 `index.html` 的 **Google Fonts 外链**：已在**源头**改掉（游戏 fork 分支把整套字形镜像进仓库，见 §8），
   但**已发布的产物仍带着外链**，直到用新 payload 重跑一次 CI。新闸门 `零外部依赖（闸门）`
-  （`tools/check-payload-offline.mjs`）会拦住这种"旧 payload 出产物"：对旧产物跑它就是红的。
+  （`tools/check-payload-offline.mjs`）会拦住这种"旧 payload 出产物"，而且已在 CI 里咬过：用旧 payload `payload-v0.1.3-c5`
+  跑的 run `37270463759` 结论 **failure**，desktop 与 android 两个 job 都恰好死在 `零外部依赖（闸门）`，
+  日志点名 `index.html` / `dev/uikit.html` 引用 `fonts.googleapis.com` 且缺 `webfonts/google/google.css`；
+  换成新 payload 就是绿的。网页版那份 `index.html` 仍带外链（线上 0.1.1 的 checkout 是热文件），要随 0.1.3 升级一起换。
 - Android 侧 `/media/…` 音频路由：`desktop/serve.mjs` 已实现 `resolveMediaPath`，
   Capacitor 那份静态资源**还没有**等价机制，所以 APK 的 BGM 仍需单独处理。
 - 大厅平台（另一套 Flask 服务，不在本仓库）：注册 400（`site.json` 与 `SKIP_EMAIL_VERIFY` 环境变量不一致）——

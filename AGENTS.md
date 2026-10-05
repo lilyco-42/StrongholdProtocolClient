@@ -83,10 +83,11 @@ gh workflow run build-clients.yml -f payload_url=<release 资产 URL> -f expect_
 4. 任何状态里提到的文件名/分支/run 号，上面必须有一条命令的输出压着它。没有就先跑。
 5. `node --test` 的通过数要写实际数字。**本仓库**当前 `npm test` = **74 项 / 74 过 / 0 失败**（2026-10-05 16:21，
    其中 2 项是"壳与纯静态宿主怎么发镜像字体"的行为测试，删除 `LONG_CACHE_DIRS` 里的 `webfonts` 会让其中一条红）。
-   游戏仓库全量当前 **3639 项 / 3621 过 / 2 失败 / 16 跳过**（2026-10-05 15:53，`6ea4a0e` = `v0.1.3-17-g6ea4a0e`）：
-   并行整跑时红的两条都是 CPU 阈值闸 —— `test/sim/perf.test.js:43` 与 `test/sim/robustness.test.js:739`（后者 best 1.5747 ms/tick，阈值 0.5）；
-   单独复跑分别是 **2/2** 与 **35/35 通过**，且本分支没碰 `server/sim/**`、也没改这两个测试文件
+   游戏仓库全量当前 **3643 项 / 3624 过 / 3 失败 / 16 跳过**（2026-10-05 16:41，`3dd1a2c`）：
+   并行整跑时红的三条都是 CPU 阈值闸 —— `test/sim/perf.test.js:22`、`test/sim/perf.test.js:43`、`test/sim/robustness.test.js:739`；
+   **这批文件单独复跑 37/37 全过**，且本分支没碰 `server/sim/**`、也没改这几个测试文件
    （`git diff upstream/master..HEAD -- server/sim test/sim` 为空）—— 是本机负载，不是回归。
+   ⚠️ 同一天里整跑红的条数出现过 1、2、3 —— 别拿条数当判据，只看"红的是不是那几条阈值闸"。
    ⚠️ 这条**没有 CI 可依赖**：游戏 fork 的 Actions 开关虽开，workflow 从未注册（runs 为 0、`gh workflow run ci.yml`
    报 "not found on the default branch"），所以游戏侧证据只有本机 `npm test`；细节见游戏仓库 `AGENTS.md` §5。
 

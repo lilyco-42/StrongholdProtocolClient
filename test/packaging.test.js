@@ -478,14 +478,14 @@ describe('desktop shell: a stable loopback origin keeps localStorage', () => {
       'fetch("//")': 'fetch("//h.example/f")',
       'import("//")': 'import("//h.example/dyn")',
       'new EventSource("//")': 'new EventSource("//h.example/s")',
-      'new WebSocket("wss://")': 'new WebSocket("wss://h.example/ws")',
+      'new WebSocket("//")': 'new WebSocket("//h.example/ws")',
       'xhr.open("GET","//")': 'x.open("GET","//h.example/x",false)',
       'navigator.sendBeacon("//")': 'navigator.sendBeacon("//h.example/beacon")',
     };
     // Not requests: an xmlns identifier and a URL inside a comment. Flagging those is what trains people to ignore a gate.
     const mustNotFlag = {
       'SVG xmlns 标识符': '<svg xmlns="http://www.w3.org/2000/svg"></svg>',
-      '注释里的地址': '// see //cdn.example.com/docs\n/* url(//cdn.example.com/x.png) */',
+      '注释里的地址': '// see https://cdn.example.com/docs\n/* https://cdn.example.com/x.png and //cdn.example.com/y.png */',
     };
     const hit = (s) => OUTBOUND.flatMap((rx) => [...s.matchAll(rx)].map((m) => m[1]));
     for (const [label, s] of Object.entries(mustFlag)) {

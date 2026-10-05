@@ -44,7 +44,7 @@ export const OUTBOUND = [
   /url\(\s*["']?(\/\/[^)'"\s]+)/g,
   /@import\s+(?:url\()?\s*["']?(\/\/[^)'"\s]+)/g,
   /(?:fetch|import|axios\.get)\s*\(\s*["'](\/\/[^'"\s]+)/g,
-  /new\s+(?:WebSocket|EventSource)\s*\(\s*["'`]\s*(?:wss?:|https?:)?(\/\/[^"'`\s)]+)/g,
+  /new\s+(?:WebSocket|EventSource)\s*\(\s*["'`](\/\/[^"'`\s)]+)/g,
   /\.open\(\s*["'](?:GET|POST|HEAD|PUT|DELETE)["']\s*,\s*["']((?:https?:)?\/\/[^'"\s]+)/gi,
   /navigator\.sendBeacon\(\s*["']((?:https?:)?\/\/[^'"\s]+)/g,
 ];

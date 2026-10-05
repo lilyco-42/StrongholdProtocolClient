@@ -107,3 +107,67 @@ export function addressError(raw) {
   if (/^[.:]/.test(rest) || rest.includes('..')) return '地址无法识别，检查一下主机名。';
   return null;
 }
+
+/**
+ * The path part of a typed address, without a trailing slash ('' when it is just host[:port]).
+ * Players paste the URL of the *page* they were given (`https://host/play`), but a game server mounted under a
+ * subpath serves its socket there too (`/play/ws`), so the picker must try both. Measured 2026-10-05 against real
+ * third-party servers: some are mounted at the root, and the ones that are not fail with a bare 404 on `/ws`.
+ * @param {string} raw
+ * @returns {string} '' or '/play' style prefix
+ */
+export function pathOf(raw) {
+  const rest = String(raw ?? '').trim().replace(/^(wss?|https?):\/\//i, '');
+  const slash = rest.indexOf('/');
+  if (slash < 0) return '';
+  const p = rest.slice(slash).replace(/[?#].*$/, '').replace(/\/+$/, '');
+  return p === '/' ? '' : p;
+}
+
+/** The same socket URL on the other scheme; anything that is not ws/wss comes back unchanged. */
+export function otherScheme(wsUrl) {
+  const s = String(wsUrl ?? '');
+  if (s.startsWith('ws://')) return `wss://${s.slice('ws://'.length)}`;
+  if (s.startsWith('wss://')) return `ws://${s.slice('wss://'.length)}`;
+  return s;
+}
+
+/**
+ * The same server mounted at the root: `wss://h:10166/play/ws` → `wss://h:10166/ws`, unchanged when it already is
+ * the root one. `toWsUrl` keeps a pasted path, so without this a root-mounted server stays unreachable.
+ */
+export function rootWsUrl(wsUrl) {
+  const s = String(wsUrl ?? '').trim();
+  const m = /^(wss?:\/\/[^/]+)\/.+\/ws$/i.exec(s);
+  return m ? `${m[1]}/ws` : s;
+}
+
+/**
+ * Every socket URL worth trying for one address, best guess first: the typed form, its root-mounted twin, then the
+ * same two on the other scheme (only when the player left the scheme out, see ambiguousScheme). At most four, and
+ * `probe` fires them concurrently, so a hopeless address still answers in about one timeout.
+ * @param {string} first the normalised socket URL of the typed address
+ * @param {boolean} ambiguous whether both schemes should be tried
+ * @returns {string[]}
+ */
+export function orderCandidates(first, ambiguous) {
+  const out = [];
+  const push = (url) => { if (url && !out.includes(url)) out.push(url); };
+  push(first);
+  push(rootWsUrl(first));
+  if (ambiguous) for (const url of [...out]) push(otherScheme(url));
+  return out;
+}
+
+/**
+ * Why did /ws fail? A browser never exposes the WebSocket handshake status, so 404 vs 503 vs 403 cannot be shown —
+ * but a `no-cors` fetch of /healthz resolves for *any* HTTP answer, which proves the host is alive. A rejection
+ * proves nothing (an Android shell blocks plain `http://` as mixed content), so `online` is only ever set from a
+ * resolve and the plain "无法连接" stays the fallback.
+ * @param {{ online?: boolean, hadPath?: boolean }} r
+ * @returns {string} '' when nothing was learned, otherwise one clause for the card
+ */
+export function probeReason({ online, hadPath }) {
+  if (!online) return '';
+  return hadPath ? '对方在线，但 /ws 与该路径下的 /ws 都没通' : '对方在线，但 /ws 没通（多半没转发到游戏服务）';
+}

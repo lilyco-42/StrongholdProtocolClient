@@ -16,13 +16,15 @@
 //   * a remembered choice in localStorage decides the server for the next launch;
 //   * desktop shells skip the UI once something is remembered (reopen with F2 / --choose-server);
 //   * Android always shows it — a phone has no F2 and this is the only way to switch servers there;
-//   * probing opens a real /ws socket (the channel the game itself uses), so it needs no CORS headers, while a
-//     best-effort /healthz fetch enriches the row whenever the server does allow it.
+//   * probing opens a real /ws socket (the channel the game itself uses), so it needs no CORS headers, and it tries
+//     every guess at once: ws/wss × typed-path/root. A /healthz that answers at all is what turns the bare
+//     "无法连接" into "对方在线，但 /ws 没通", which is the difference the player can act on.
 
 import { toHttpUrl, toWsUrl } from '../net.js';
 import {
   BUILTIN_SERVERS, K_AUTOSTART, K_CHOSEN, K_LIST, K_SERVER, NAME_MAX,
-  addressError, ambiguousScheme, autostartOn, cleanName, customFrom, isAndroidUA, serverName, shouldShowPicker,
+  addressError, ambiguousScheme, autostartOn, cleanName, customFrom, isAndroidUA, orderCandidates, pathOf,
+  probeReason, serverName, shouldShowPicker,
 } from './picker-core.js';
 
 const PROBE_TIMEOUT_MS = 4000;
@@ -93,19 +95,17 @@ export function serverList() {
 }
 
 /**
- * Socket URLs to try for a typed address, best guess first. A scheme-less `host:port` is the one case the player
- * cannot be expected to get right — a self-hosted server on a public IP wants plain `ws://`, a TLS reverse proxy
- * on an odd port wants `wss://` — so the second candidate is the other scheme.
+ * Socket URLs to try for a typed address, best guess first. Two guesses the player cannot make from the outside:
+ * the scheme (a self-hosted server on a public IP wants plain `ws://`, a TLS reverse proxy on an odd port wants
+ * `wss://`) and the mount (players paste the URL of the *page* they were given, `https://host/play`, but most
+ * servers only answer on the root `/ws`). See picker-core.js's orderCandidates.
  * @param {string} address
  * @returns {string[]}
  */
 export function candidateWsUrls(address) {
   const raw = String(address ?? '').trim();
   if (!raw) return [];
-  const first = toWsUrl(raw);
-  if (!ambiguousScheme(raw)) return [first];
-  const alt = first.startsWith('wss:') ? `ws:${first.slice(4)}` : `wss:${first.slice(3)}`;
-  return [first, alt];
+  return orderCandidates(toWsUrl(raw), ambiguousScheme(raw));
 }
 
 /** The web (http) URL of an already-normalised socket URL. */
@@ -114,7 +114,8 @@ const httpUrlOf = (wsUrl) => wsUrl.replace(/^ws/, 'http').replace(/\/ws$/, '');
 /**
  * One attempt: opens /ws (no CORS involved) and reads /healthz when the server allows it.
  * @param {string} wsUrl an address already normalised by candidateWsUrls
- * @returns {Promise<{ ok: boolean, ms: number, info?: object }>}
+ * @returns {Promise<{ ok: boolean, ms: number, info?: object, online: boolean }>} `online` is proven by /healthz
+ *          answering over HTTP, which is the only way to tell "wrong server" from "no server" in a browser
  */
 function probeOnce(wsUrl, timeoutMs) {
   return new Promise((resolve) => {
@@ -123,60 +124,77 @@ function probeOnce(wsUrl, timeoutMs) {
     let timer = null;
     let opened = false;
     let settled = false;
+    let healthDone = false;
+    let failWait = false;
     let info;
+    let online = false;
 
-    const finish = (ok) => {
+    const finish = () => {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
       try { socket?.close(); } catch { /* already closed */ }
-      resolve({ ok, ms: Date.now() - started, info });
+      resolve({ ok: opened, ms: Date.now() - started, info, online });
     };
 
-    timer = setTimeout(() => finish(false), timeoutMs);
+    // A failed socket is only reported once /healthz has had its say: an instant 403/503 handshake would otherwise
+    // always beat the fetch, and '对方在线，但 /ws 没通' is the part the player can act on.
+    const fail = () => { if (healthDone) finish(); else failWait = true; };
+    const healthSettled = () => { healthDone = true; if (failWait) finish(); };
 
-    // Best effort, never blocking: /healthz usually has no CORS headers, and that is the server's business
-    // (the browser logs a console error for it, the picker ignores the rejection).
-    fetch(`${httpUrlOf(wsUrl)}/healthz`, { cache: 'no-store' })
-      .then((r) => r.json())
-      .then((json) => {
-        info = json;
-        if (opened) finish(true);
+    timer = setTimeout(finish, timeoutMs);
+
+    const health = `${httpUrlOf(wsUrl)}/healthz`;
+    // Best effort, never blocking: /healthz usually has no CORS headers, and that is the server's business.
+    fetch(health, { cache: 'no-store' })
+      .then((r) => {
+        online = true;
+        return r.json();
       })
-      .catch(() => { /* no CORS or no route: the socket result decides */ });
+      .then((json) => { info = json; healthSettled(); }, () => {
+        // No CORS (or an HTML error body): ask again without it. A `no-cors` fetch resolves for *any* HTTP status, so
+        // a resolve proves the host is alive; a rejection proves nothing (Android blocks plain http as mixed content).
+        fetch(health, { mode: 'no-cors', cache: 'no-store' })
+          .then(() => { online = true; }, () => { /* nothing learned */ })
+          .then(healthSettled, healthSettled);
+      });
 
     try {
       socket = new WebSocket(wsUrl);
     } catch {
-      finish(false);
+      fail();
       return;
     }
-    socket.onopen = () => { opened = true; finish(true); };
-    socket.onerror = () => { if (!opened) finish(false); };
-    socket.onclose = () => { if (!opened) finish(false); };
+    socket.onopen = () => { opened = true; finish(); };
+    socket.onerror = () => { if (!opened) fail(); };
+    socket.onclose = () => { if (!opened) fail(); };
   });
 }
 
 /**
- * Is `address` a live game server? Checks the channel the game itself will use, so a green row means the player
- * can actually get in. The first candidate gets a second attempt (a slow handshake must not turn into a misleading
- * "无法连接"); the other-scheme candidate gets one, so a hopeless address still fails reasonably fast.
+ * Is `address` a live game server? Checks the channel the game itself will use, so a green row means the player can
+ * actually get in. Every candidate (scheme × mount) is tried at once — one handshake each, so covering more guesses
+ * costs no waiting — and only the best guess is retried when all of them fail (a slow handshake must not turn into a
+ * misleading "无法连接").
  * @param {string} address
  * @param {number} [timeoutMs] per attempt
- * @param {number} [attempts]
- * @returns {Promise<{ ok: boolean, ms: number, info?: object, url?: string }>} `url` is the socket URL that worked
+ * @param {number} [attempts] retries of the first candidate
+ * @returns {Promise<{ ok: boolean, ms: number, info?: object, online: boolean, hadPath: boolean, url?: string }>}
+ *          `url` is the socket URL that worked
  */
 export async function probe(address, timeoutMs = PROBE_TIMEOUT_MS, attempts = 2) {
-  let result = { ok: false, ms: 0 };
   const candidates = candidateWsUrls(address);
-  for (let c = 0; c < candidates.length; c++) {
-    const tries = c === 0 ? Math.max(1, attempts) : 1;
-    for (let i = 0; i < tries; i++) {
-      result = await probeOnce(candidates[c], timeoutMs);
-      if (result.ok) return { ...result, url: candidates[c] };
-    }
+  const hadPath = pathOf(address) !== '';
+  if (!candidates.length) return { ok: false, ms: 0, online: false, hadPath };
+  const raced = await Promise.all(candidates.map(async (url) => ({ ...(await probeOnce(url, timeoutMs)), url })));
+  const good = raced.find((r) => r.ok);
+  if (good) return { ...good, hadPath };
+  if (attempts > 1) {
+    const again = { ...(await probeOnce(candidates[0], timeoutMs)), url: candidates[0] };
+    if (again.ok) return { ...again, hadPath };
+    return { ok: false, ms: again.ms, info: again.info ?? raced.find((r) => r.info)?.info, online: again.online || raced.some((r) => r.online), hadPath };
   }
-  return result;
+  return { ok: false, ms: Math.max(0, ...raced.map((r) => r.ms)), info: raced.find((r) => r.info)?.info, online: raced.some((r) => r.online), hadPath };
 }
 
 const CSS = `
@@ -333,17 +351,20 @@ function mount() {
       const st = states.get(s.key) || {};
       const custom = customEntryOf(s.key) != null;
       const state = st.pending ? '检测中…' : st.ok ? `可连接 · ${st.ms}ms` : st.failed ? '无法连接' : '';
+      // The reason goes on the address line, which wraps; the status column stays one short word.
+      const reason = st.pending || st.ok ? '' : probeReason(st);
       const info = st.info
         ? [st.info.app ? `v${st.info.app}` : '', st.info.humans != null ? `在线 ${st.info.humans}` : '', st.info.rooms != null ? `房间 ${st.info.rooms}` : '']
           .filter(Boolean).join(' · ')
         : '';
+      const sub = [info || s.note, reason].filter(Boolean).join(' · ');
       const card = document.createElement('div');
       card.className = `sp-pick__card${s.key === selected ? ' is-sel' : ''}`;
       card.innerHTML = `
         <div class="sp-pick__dot ${st.pending || !state ? '' : st.ok ? 'is-ok' : 'is-bad'}"></div>
         <div style="min-width:0">
           <div class="sp-pick__name">${esc(s.label)}${s.key === keyOf(buildDefault()) ? ' · 默认' : ''}</div>
-          <div class="sp-pick__addr">${esc(s.http.replace(/^https?:\/\//, ''))}${info || s.note ? ` · ${esc(info || s.note)}` : ''}</div>
+          <div class="sp-pick__addr">${esc(s.http.replace(/^https?:\/\//, ''))}${sub ? ` · ${esc(sub)}` : ''}</div>
         </div>
         <div class="sp-pick__state">${esc(state)}</div>
         ${custom ? '<button class="sp-pick__del" title="删除">×</button>' : ''}`;
@@ -367,9 +388,11 @@ function mount() {
     states.set(entry.key, { pending: true });
     renderList();
     probe(entry.address).then((r) => {
-      states.set(entry.key, { ok: r.ok, ms: r.ms, info: r.info, failed: !r.ok, url: r.url });
+      states.set(entry.key, { ok: r.ok, ms: r.ms, info: r.info, failed: !r.ok, url: r.url, online: r.online, hadPath: r.hadPath });
       renderList();
-      if (!r.ok && entry.key === selected) setHint(`连不上 ${entry.http} —— 确认服务器已启动，或换一个地址。`);
+      if (!r.ok && entry.key === selected) {
+        setHint(`连不上 ${entry.http}${r.online ? '：对方在线，但没有游戏服务在 /ws 等待连接（可能已停机或没转发到游戏端口）。' : '：地址、端口或网络不通。'}确认服务器已启动，或换一个地址。`);
+      }
     });
   }
 
@@ -393,11 +416,23 @@ function mount() {
     for (const s of list) refresh(s);
   }
 
-  /** Remember the choice and (re)boot into it — the only writer of sp.shell.*. */
-  function connected(entry) {
+  /**
+   * Remember the choice and (re)boot into it — the only writer of sp.shell.*.
+   * The address stored is the socket URL that actually answered, not what the player typed: the game itself has no
+   * candidate fallback (`net.js` takes one URL), so `https://host/play` must become `ws://host/ws` before the reload.
+   */
+  async function connected(entry) {
+    if (!entry?.address) return;
     // Prefer the URL that actually answered the probe: a typed `host:port` may only be reachable on one scheme.
-    const st = entry?.key ? states.get(entry.key) : null;
-    const address = (st?.ok && st.url) ? st.url : entry?.address;
+    const st = entry.key ? states.get(entry.key) : null;
+    let address = (st?.ok && st.url) ? st.url : entry.address;
+    if (!st) {
+      // Direct connect: nothing has probed this address yet, so find the socket URL that works before going in.
+      setHint(`正在连接 ${toHttpUrl(entry.address)} …`);
+      const r = await probe(entry.address);
+      if (r.ok && r.url) address = r.url;
+      else setHint(`连不上 ${toHttpUrl(entry.address)}：${probeReason(r) || '地址、端口或网络不通'}。仍然尝试进入，请稍候…`);
+    }
     const key = keyOf(address);
     if (!key) return;
     writeItem(K_SERVER, address, 'localStorage');
@@ -419,7 +454,7 @@ function mount() {
   }
 
   const ADDR_HINT = 'host、host:port、http(s)://…、ws(s)://…';
-  const ADDR_NOTE = '<div class="sp-pick__note">不写协议也能用：带端口的地址按 ws:// 与 wss:// 各试一次，公网域名默认 wss://。</div>';
+  const ADDR_NOTE = '<div class="sp-pick__note">不写协议也能用：带端口的地址按 ws:// 与 wss:// 各试一次，公网域名默认 wss://。粘贴网页地址（如 https://host/play）也会顺带试它的根路径 /ws。</div>';
 
   /** The add / edit / direct-connect form under the list (two fields for a saved server, one for a quick connect). */
   function renderForm() {

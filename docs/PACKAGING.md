@@ -217,15 +217,15 @@ macOS / Linux 同理，把 `commandlinetools-win` 换成 `commandlinetools-mac` 
 | 行为 | 说明 |
 |---|---|
 | 主页 | 上下两个选项：**单人游戏**（预留——大厅 / 房间 / 模拟都在服务端，暂无"纯前端单机"实现，点击只给提示）、**多人游戏** |
-| 多人页 | 服务器列表 + **添加服务器**（名称 + 地址）、**直接连接**（只填地址，连上后不保存进列表）、**编辑**（改选中的自建服务器；内置与打包默认服不可改）、**刷新**（重新测一遍所有延迟，放在"返回"左边）、**返回** |
-| 地址写法 | `host`、`host:port`、`http(s)://…`、`ws(s)://…`，不用手写协议：不带协议时带端口的按 `ws://` 猜（`:443` 除外），公网域名默认 `wss://`；猜的协议不通会自动换另一种再试，命中后把那个地址存进 `sp.shell.server`（`shell/picker-core.js` 的 `ambiguousScheme` 决定哪些地址需要双协议探测） |
+| 多人页 | 服务器列表 + **添加服务器**（名称 + 地址）、**直接连接**（只填地址，不进列表；先用探测选通用那条地址再进入）、**编辑**（改选中的自建服务器；内置与打包默认服不可改）、**刷新**（重新测一遍所有延迟，放在"返回"左边）、**返回** |
+| 地址写法 | `host`、`host:port`、`http(s)://…`、`ws(s)://…`，不用手写协议：不带协议时带端口的按 `ws://` 猜（`:443` 除外），公网域名默认 `wss://`。候选 = **协议 × 路径**：`toWsUrl()` 保留粘贴的路径（`https://host/play` → `wss://host/play/ws`），`picker-core.js` 的 `orderCandidates()` 再补上根挂载那条（`wss://host/ws`），地址没写协议时两种协议都补，最多 4 条。命中后把**通了的那条**存进 `sp.shell.server`（`ambiguousScheme` 决定哪些地址需要双协议，`pathOf` 决定失败文案提不提路径） |
 | 列出的服务器 | 内置项只有 `本机 / 局域网 localhost:3000`（`shell/picker-core.js` 的 `BUILTIN_SERVERS`，给自己开服的人）；`--server` 打包指定的地址会标"默认"并排在前面（**当前发布的产物是 `sp.lain42.top`**）；玩家自己添加的服务器（按 `js/net.js` 的 `toWsUrl()` 归一化，存在客户端本地；旧的"只存地址字符串"列表在读取时会升级成 `{name, address}`） |
-| 探测 | 直接开一条 `/ws` 连接（和游戏同一条通道，因此不依赖服务器 CORS），失败重试一次；绿点 = 真的能连进去。若服务器给 `/healthz` 加了 `Access-Control-Allow-Origin`，还会显示 `v<app> · 在线 n · 房间 n`（不加只是少一行信息，控制台会有一条 CORS 报错，页面已忽略） |
+| 探测 | 直接开 `/ws`（和游戏同一条通道，因此不依赖服务器 CORS），4 条候选**同时**开，一轮结束后最佳猜测重试一次 → 死地址约 2×`PROBE_TIMEOUT_MS`（8 s）出结果；绿点 = 真的能连进去。握手失败在浏览器里拿不到原因，所以 `/healthz` 会用 `mode: 'no-cors'` 再问一次（它对任何 HTTP 状态都 resolve，只有主机没答才 reject）：答了 → 卡片写"对方在线，但 `/ws` 没通"（`probeReason`），没答 → 保持"无法连接"（安卓壳拦明文 `http://`，不能据此断言主机无响应）。服务器给了 `Access-Control-Allow-Origin` 还能读 JSON，显示 `v<app> · 在线 n · 房间 n`； socket 失败时会等 `/healthz` 落定再收（等不到就按 `PROBE_TIMEOUT_MS` 截止），否则秒断的握手永远抢在那句结论前面 |
 | 记住上次 | 桌面端勾"记住并直接进入"后下次直接进游戏；想换服务器按 **F2**，或用 `--choose-server` 启动。Android 没有 F2，所以每次都显示、默认不记住（否则玩家换了服务器就回不去了） |
 | 优先级 | `--server <地址>`（本次运行）> `?server=<地址>` > 菜单记住的地址 > 打包默认地址 |
 | 网页版 | 没有这个页面（浏览器版的服务器永远是自己所在的站点） |
 
-改动菜单后跑一遍 `test/picker.test.js`（规则单测，含 `customFrom` 的旧格式迁移）。DOM 那半边没有自动化测试，改动后请手动确认：桌面 `cd desktop && npm start`，Android 装 APK 后首启。
+改动菜单后跑一遍 `test/picker.test.js`（规则单测，含 `customFrom` 的旧格式迁移，以及候选顺序 / 失败文案）和 `test/picker-probe.test.js`（探测：用脚本化的 `fetch` / `WebSocket` 跑真实的 payload 模块图，需要游戏 checkout，没有就自动跳过）。**渲染那半边仍没有自动化测试**，改动后请手动确认：桌面 `cd desktop && npm start`，Android 装 APK 后首启。
 
 ## 7. 服务器公告（`app.notice`）
 
@@ -273,7 +273,7 @@ node scripts/notice.mjs --clear        # 撤回
 | 弹窗「客户端资源缺失」 | 先运行 `npm run client:build` |
 | 报「找不到游戏仓库」 | 用 `--game <目录>`、`SP_GAME_ROOT` 或 `client.config.json` 的 `gameRoot` 指定 checkout |
 | 报 `hunk … does not match` / 补丁没改到文件 | 上游改了 `public/index.html`、`js/net.js` 或 `js/screens/room.js`：按新源码重新生成 `patches/game-client.patch`，再跑一次 |
-| 选择服务器页里全部"无法连接" | 地址写错、服务器没开、或防火墙拦了 `/ws`；本机测试用 `npm start` 起游戏仓库（默认 3000），页面上的 `localhost:3000` 会变绿 |
+| 选择服务器页里全部"无法连接" | 地址写错、服务器没开、或防火墙拦了 `/ws`；本机测试用 `npm start` 起游戏仓库（默认 3000），页面上的 `localhost:3000` 会变绿。写的是别人给的地址却报"**对方在线，但 `/ws` 没通**"，那就是对面（反代没转发到游戏端口 / 服务已停），客户端这边没问题 —— 这条结论来自 `/healthz` 有答而 `/ws` 没通，浏览器给不了更细的原因（404 / 503 / 403 在握手层长得一样） |
 | 选择页每次启动都出现 / 想换服务器 | 桌面按 **F2**（或 `--choose-server`），取消勾选"记住并直接进入"；Android 每次都会问 |
 | 重启后要重新登录 / 干员调配、设置被清空 | 旧版本客户端每次启动都换随机端口（换了源，`localStorage` 读不回来）：重新 `npm run client:desktop` 生成固定 `DEFAULT_PORT`（47821）的客户端，见 §4.4 |
 | Android 上局域网地址连不上 | 先确认 APK 是打开 `allowMixedContent` 打的（§5）；地址用 `192.168.x.x:3000` 这种形式，手机与服务器要在同一个 Wi-Fi |

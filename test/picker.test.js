@@ -6,10 +6,12 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import {
   BUILTIN_SERVERS, K_AUTOSTART, K_CHOSEN, K_LIST, K_SERVER, NAME_MAX,
-  addressError, ambiguousScheme, autostartOn, cleanName, customFrom, isAndroidUA, serverName, shouldShowPicker,
+  addressError, ambiguousScheme, autostartOn, cleanName, customFrom, isAndroidUA, orderCandidates, otherScheme,
+  pathOf, probeReason, rootWsUrl, serverName, shouldShowPicker,
 } from '../shell/picker-core.js';
 
 describe('when the picker is shown', () => {
@@ -115,5 +117,108 @@ describe('server addresses', () => {
 
   test('storage keys are namespaced under sp.shell.* so they never collide with the game"s own keys', () => {
     for (const k of [K_SERVER, K_AUTOSTART, K_LIST, K_CHOSEN]) assert.match(k, /^sp\.shell\./);
+  });
+});
+
+// What the picker tries, and what it says when nothing worked. `toWsUrl` (the game's, patched in by
+// patches/game-client.patch) normalises first, so these are written the way candidateWsUrls sees them: the socket
+// URL of the typed address. Addresses below are the real third-party servers a player pasted, 2026-10-05.
+describe('which socket URLs a probe tries', () => {
+  test('a typed path is kept, and its root twin is tried too', () => {
+    // 'https://sp.rainya.me:10166/play' → toWsUrl → 'wss://sp.rainya.me:10166/play/ws'
+    assert.deepEqual(orderCandidates('wss://sp.rainya.me:10166/play/ws', false), [
+      'wss://sp.rainya.me:10166/play/ws', 'wss://sp.rainya.me:10166/ws',
+    ], 'a server mounted at the root is unreachable if only the pasted path is tried');
+  });
+
+  test('a root address needs exactly one candidate', () => {
+    assert.deepEqual(orderCandidates('wss://wei.linxia.dev/ws', false), ['wss://wei.linxia.dev/ws']);
+    assert.deepEqual(orderCandidates('', false), []);
+  });
+
+  test('a scheme-less host:port still tries ws:// and wss://, path first', () => {
+    assert.deepEqual(orderCandidates('ws://192.168.1.9:3000/ws', true), [
+      'ws://192.168.1.9:3000/ws', 'wss://192.168.1.9:3000/ws',
+    ]);
+    assert.deepEqual(orderCandidates('ws://1.2.3.4:3000/play/ws', true), [
+      'ws://1.2.3.4:3000/play/ws', 'ws://1.2.3.4:3000/ws', 'wss://1.2.3.4:3000/play/ws', 'wss://1.2.3.4:3000/ws',
+    ], 'four guesses at most, best one first');
+    const urls = orderCandidates('ws://h:3000/a/b/ws', true);
+    assert.equal(new Set(urls).size, urls.length, 'never the same URL twice');
+  });
+
+  test('rootWsUrl only strips a real subpath', () => {
+    assert.equal(rootWsUrl('wss://h:10166/play/ws'), 'wss://h:10166/ws');
+    assert.equal(rootWsUrl('ws://h:3000/a/b/ws'), 'ws://h:3000/ws');
+    assert.equal(rootWsUrl('wss://h/ws'), 'wss://h/ws', 'already the root one');
+    assert.equal(rootWsUrl('wss://h'), 'wss://h');
+    assert.equal(rootWsUrl(''), '');
+  });
+
+  test('otherScheme flips ws/wss and leaves anything else alone', () => {
+    assert.equal(otherScheme('ws://h/ws'), 'wss://h/ws');
+    assert.equal(otherScheme('wss://h:3000/play/ws'), 'ws://h:3000/play/ws');
+    assert.equal(otherScheme('http://h/ws'), 'http://h/ws');
+    assert.equal(otherScheme(undefined), '');
+  });
+
+  test('pathOf is what decides whether a failure mentions the path', () => {
+    assert.equal(pathOf('https://host/play'), '/play');
+    assert.equal(pathOf('host:3000/play/'), '/play');
+    assert.equal(pathOf('host/play?room=AB'), '/play');
+    assert.equal(pathOf('wss://host/a/b/ws'), '/a/b/ws');
+    assert.equal(pathOf('https://host/'), '', 'a bare trailing slash is not a path');
+    assert.equal(pathOf('host:3000'), '');
+    assert.equal(pathOf(''), '');
+    assert.equal(pathOf(null), '');
+  });
+});
+
+describe('what a failed probe says', () => {
+  test('a host that answers /healthz over HTTP is online even though /ws failed', () => {
+    // game.xiaolubao.com answers 503 on /ws, ark-proto.stardust.matce.cn 401/403: alive, not a game endpoint.
+    assert.match(probeReason({ online: true, hadPath: false }), /对方在线，但 \/ws 没通/);
+    assert.match(probeReason({ online: true, hadPath: true }), /与该路径下的 \/ws 都没通/);
+  });
+
+  test('nothing is claimed when /healthz did not prove anything', () => {
+    // A no-cors rejection proves nothing (an Android shell blocks plain http as mixed content), so the row keeps
+    // the plain '无法连接' rather than a wrong '主机无响应'.
+    assert.equal(probeReason({ online: false, hadPath: true }), '');
+    assert.equal(probeReason({}), '');
+  });
+});
+
+// The DOM half cannot run here, but its import list can be checked against the pure module: index.html loads
+// /js/shell/picker.js as a module, and one name that does not exist throws while evaluating it — which would leave
+// every player staring at the boot screen with no picker and no test failure.
+describe('the picker module graph', () => {
+  const read = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8');
+  const core = read('../shell/picker-core.js');
+  const picker = read('../shell/picker.js');
+  const exportsOf = (src) => new Set(
+    [...src.matchAll(/export\s+(?:function|const|class)\s+([A-Za-z0-9_$]+)/g)].map((m) => m[1]));
+  const importedBy = (src) => {
+    const m = /import\s*\{([^}]*)\}\s*from\s*'\.\/picker-core\.js'/.exec(src);
+    if (!m) return null;
+    return new Set(m[1].split(',').map((s) => s.trim().split(/\s+as\s+/)[0].trim()).filter(Boolean));
+  };
+
+  test('picker.js imports only names picker-core.js exports', () => {
+    const imported = importedBy(picker);
+    assert.ok(imported, "picker.js must import its rules from './picker-core.js'");
+    for (const name of imported) {
+      assert.ok(exportsOf(core).has(name), `picker-core.js does not export ${name}`);
+    }
+  });
+
+  test('every rule picker.js calls is imported', () => {
+    const imported = importedBy(picker);
+    assert.ok(imported, "picker.js must import its rules from './picker-core.js'");
+    const body = picker.split('\n').filter((line) => !/^\s*(?:\/\/|\*|\s*$)/.test(line)).join('\n');
+    const called = new Set([...body.matchAll(/\b([A-Za-z_$][\w$]*)\s*\(/g)].map((m) => m[1]));
+    for (const name of exportsOf(core)) {
+      if (called.has(name)) assert.ok(imported.has(name), `picker.js calls ${name}() but never imports it`);
+    }
   });
 });

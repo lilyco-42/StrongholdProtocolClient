@@ -164,10 +164,10 @@ export function orderCandidates(first, ambiguous) {
  * but a `no-cors` fetch of /healthz resolves for *any* HTTP answer, which proves the host is alive. A rejection
  * proves nothing (an Android shell blocks plain `http://` as mixed content), so `online` is only ever set from a
  * resolve and the plain "无法连接" stays the fallback.
- * @param {{ online?: boolean, hadPath?: boolean }} r
- * @returns {string} '' when nothing was learned, otherwise one clause for the card
+ * @param {{ ok?: boolean, online?: boolean, hadPath?: boolean }} r a probe result
+ * @returns {string} '' when it worked or nothing was learned, otherwise one clause for the card
  */
-export function probeReason({ online, hadPath }) {
-  if (!online) return '';
+export function probeReason({ ok, online, hadPath }) {
+  if (ok || !online) return '';
   return hadPath ? '对方在线，但 /ws 与该路径下的 /ws 都没通' : '对方在线，但 /ws 没通（多半没转发到游戏服务）';
 }

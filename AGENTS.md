@@ -81,7 +81,7 @@ gh workflow run build-clients.yml -f payload_url=<release 资产 URL> -f expect_
    并**排除混淆变量**：观战按钮的表达式是 `!codeOk || !online || spectateBlocked`，密钥框空着时它本来就是灰的 ——
    我曾据此报过一次假阳性。
 4. 任何状态里提到的文件名/分支/run 号，上面必须有一条命令的输出压着它。没有就先跑。
-5. `node --test` 的通过数要写实际数字，但**条数本身不是判据**（每加一条测试就变）。现测 **86 项 / 86 过**（2026-10-05 本机；带游戏 checkout 时 **100 项 / 100 过**）。
+5. `node --test` 的通过数要写实际数字，但**条数本身不是判据**（每加一条测试就变）。现测 **87 项 / 87 过**（2026-10-05 本机；带游戏 checkout 时 **101 项 / 101 过**）。
    ⚠️ 整个 `describe(..., { skip: ... })` 被跳过时**不进 `skipped` 计数、也不显示在汇总里**，只看数字会以为契约组跑了 —— 判据是行首那个 `﹣`。
    本机 checkout 在 `D:/Code/Stronghold-Protocol-upstream`（`client.config.json` 默认的 `../Stronghold-Protocol` 不存在），
    所以上面两个数字是同一条命令的两种模式：`SP_GAME_ROOT=... npm test` / `npm test`。

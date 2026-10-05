@@ -187,6 +187,13 @@ describe('what a failed probe says', () => {
     assert.equal(probeReason({ online: false, hadPath: true }), '');
     assert.equal(probeReason({}), '');
   });
+
+  test('a probe that worked never gets a failure clause, whatever else it learned', () => {
+    // Live 2026-10-05: `sp.rainya.me:10166/play` opened the *root* /ws while still reporting /healthz online, so a
+    // result can be both ok and online. Keying the clause on the failure only is what keeps that row green.
+    assert.equal(probeReason({ ok: true, online: true, hadPath: true }), '');
+    assert.equal(probeReason({ ok: true, online: false, hadPath: false }), '');
+  });
 });
 
 // The DOM half cannot run here, but its import list can be checked against the pure module: index.html loads

@@ -13,7 +13,7 @@ import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import zlib from 'node:zlib';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -400,6 +400,68 @@ describe('desktop shell: a stable loopback origin keeps localStorage', () => {
     } finally {
       await served?.close();
       await new Promise((resolve) => blocker.server.close(resolve));
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('the weakest host model still serves the mirror: plain static, no alias, no rewrite (Capacitor does exactly this)', async () => {
+    // The APK's BGM was silent because Capacitor is *just* a static file host: it cannot resolve the extension-less
+    // /media/… alias (that is what `__SP_MEDIA_ALIAS__ = false` is for). The font mirror went through the same question,
+    // so it is pinned here rather than in a one-off probe script nobody can re-run: if the sheet or a slice needs any
+    // host cooperation at all, the APK silently falls back to system fonts on a player's phone.
+    const root = mkdtempSync(path.join(tmpdir(), 'sp-plain-'));
+    writeFileSync(path.join(root, 'index.html'), HTML);
+    mkdirSync(path.join(root, 'webfonts', 'google'), { recursive: true });
+    mkdirSync(path.join(root, 'assets', 'audio', 'bgm'), { recursive: true });
+    writeFileSync(path.join(root, 'assets', 'audio', 'bgm', 'act1.mp3'), 'MP3MP3MP3');
+    const SHEET = "@font-face{src:url(/webfonts/google/f0.woff2)}@font-face{src:url(/webfonts/google/f1.woff2)}";
+    writeFileSync(path.join(root, 'webfonts', 'google', 'google.css'), SHEET);
+    writeFileSync(path.join(root, 'webfonts', 'google', 'f0.woff2'), 'wOF2');
+
+    const MIME = { '.css': 'text/css; charset=utf-8', '.woff2': 'font/woff2', '.mp3': 'audio/mpeg', '.html': 'text/html' };
+    const server = http.createServer((req, res) => {
+      const rel = decodeURIComponent((req.url || '/').split('?')[0]).replace(/^\/+/, '');
+      const abs = path.resolve(root, rel);
+      // Deliberately dumb: one path → one file, no aliases, no index fallback beyond the literal name.
+      if (!abs.startsWith(path.resolve(root)) || !existsSync(abs) || !statSync(abs).isFile()) {
+        res.writeHead(404); res.end('not found'); return;
+      }
+      res.writeHead(200, { 'Content-Type': MIME[path.extname(abs)] || 'application/octet-stream' });
+      res.end(readFileSync(abs));
+    });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const get = (p) => new Promise((resolve, reject) => {
+      http.get(`${base}${p}`, (r) => { r.resume(); r.on('end', () => resolve({ status: r.statusCode, type: r.headers['content-type'] })); }).on('error', reject);
+    });
+
+    try {
+      const alias = await get('/media/bgm/act1');
+      assert.equal(alias.status, 404, 'premise: a plain static host cannot serve the alias — that is the bug the flag dodges');
+      const direct = await get('/assets/audio/bgm/act1.mp3');
+      assert.equal(direct.status, 200, 'the form the APK keeps must resolve on any static host');
+      assert.equal(direct.type, 'audio/mpeg');
+
+      const sheet = await get('/webfonts/google/google.css');
+      assert.equal(sheet.status, 200, 'the mirrored sheet needs no host cooperation');
+      assert.match(sheet.type || '', /text\/css/);
+      const face = await get('/webfonts/google/f0.woff2');
+      assert.equal(face.status, 200);
+      assert.equal(face.type, 'font/woff2');
+      const absent = await get('/webfonts/google/f1.woff2');
+      assert.equal(absent.status, 404, 'positive control: this lane really opens the disk, it does not answer 200 to everything');
+
+      // The reference form is what makes this host-independent: every slice must be addressed from the root, never
+      // relatively, or a nested page would ask for /dev/webfonts/… and get nothing.
+      if (GAME_ROOT) {
+        const real = readFileSync(path.join(GAME_ROOT, 'public', 'webfonts', 'google', 'google.css'), 'utf8');
+        const urls = [...new Set([...real.matchAll(/url\(([^)]+)\)/g)].map((m) => m[1].trim().replace(/^['"]|['"]$/g, '')))];
+        assert.ok(urls.length > 100, `镜像里只找到 ${urls.length} 个 url() —— 读错了文件，这条测试就是空的`);
+        assert.deepEqual(urls.filter((u) => !u.startsWith('/webfonts/google/')), [],
+          '切片必须用根绝对路径引用，纯静态宿主才会按原样命中');
+      }
+    } finally {
+      await new Promise((r) => server.close(r));
       rmSync(root, { recursive: true, force: true });
     }
   });

@@ -81,7 +81,9 @@ gh workflow run build-clients.yml -f payload_url=<release 资产 URL> -f expect_
    并**排除混淆变量**：观战按钮的表达式是 `!codeOk || !online || spectateBlocked`，密钥框空着时它本来就是灰的 ——
    我曾据此报过一次假阳性。
 4. 任何状态里提到的文件名/分支/run 号，上面必须有一条命令的输出压着它。没有就先跑。
-5. `node --test` 的通过数要写实际数字。游戏仓库全量当前 **3639 项 / 3621 过 / 2 失败 / 16 跳过**（2026-10-05 15:53，`6ea4a0e` = `v0.1.3-17-g6ea4a0e`）：
+5. `node --test` 的通过数要写实际数字。**本仓库**当前 `npm test` = **74 项 / 74 过 / 0 失败**（2026-10-05 16:21，
+   其中 2 项是"壳与纯静态宿主怎么发镜像字体"的行为测试，删除 `LONG_CACHE_DIRS` 里的 `webfonts` 会让其中一条红）。
+   游戏仓库全量当前 **3639 项 / 3621 过 / 2 失败 / 16 跳过**（2026-10-05 15:53，`6ea4a0e` = `v0.1.3-17-g6ea4a0e`）：
    并行整跑时红的两条都是 CPU 阈值闸 —— `test/sim/perf.test.js:43` 与 `test/sim/robustness.test.js:739`（后者 best 1.5747 ms/tick，阈值 0.5）；
    单独复跑分别是 **2/2** 与 **35/35 通过**，且本分支没碰 `server/sim/**`、也没改这两个测试文件
    （`git diff upstream/master..HEAD -- server/sim test/sim` 为空）—— 是本机负载，不是回归。

@@ -76,10 +76,12 @@ gh workflow run build-clients.yml -f payload_url=<release 资产 URL> -f expect_
    并**排除混淆变量**：观战按钮的表达式是 `!codeOk || !online || spectateBlocked`，密钥框空着时它本来就是灰的 ——
    我曾据此报过一次假阳性。
 4. 任何状态里提到的文件名/分支/run 号，上面必须有一条命令的输出压着它。没有就先跑。
-5. `node --test` 的通过数要写实际数字。游戏仓库全量当前 **3633 项**：并行整跑时唯一会红的是
-   `test/sim/robustness.test.js` 的 CPU 阈值闸（best-of-3 实测 0.52 ms/tick，阈值 0.5）；
-   单独跑该文件 **35/35 通过**（878–953 ms），且本分支没碰 `server/sim/**`、也没改这个测试文件
+5. `node --test` 的通过数要写实际数字。游戏仓库全量当前 **3638 项 / 3621 过 / 16 跳过**（2026-10-05 15:21，合并上游 `bd892a4` 之后）：
+   并行整跑时唯一会红的是 `test/sim/robustness.test.js` 的 CPU 阈值闸（best-of-3 实测 0.52 ms/tick，阈值 0.5）；
+   单独跑该文件 **35/35 通过**（878–2024 ms），且本分支没碰 `server/sim/**`、也没改这个测试文件
    （`git diff upstream/master..HEAD -- server/sim test/sim` 为空）—— 是本机负载，不是回归。
+   ⚠️ 这条**没有 CI 可依赖**：游戏 fork 的 Actions 开关虽开，workflow 从未注册（runs 为 0、`gh workflow run ci.yml`
+   报 "not found on the default branch"），所以游戏侧证据只有本机 `npm test`；细节见游戏仓库 `AGENTS.md` §5。
 
 ## 7. 已知未修（别当成已解决）
 

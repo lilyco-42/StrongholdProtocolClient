@@ -110,7 +110,15 @@ gh workflow run build-clients.yml -f payload_url=<release 资产 URL> -f expect_
 
 CI 现在有四道闸门：payload 完整性、`expect_app` 版本、`零外部依赖（闸门）`（暂存 payload）、`零外部依赖（产物内，闸门）`（出厂字节：桌面扫 `resources/www`，APK 用 `--zip` 按条目扫）。产物内必须能查到这三样（每次发布都重验，别沿用旧结论）：`app.asar` 里 `resolveMediaPath` ≥1；payload `js/net.js` 里 `serverKey`；APK 内 `assets/public/js/runtime-config.js` 含 `__SP_MEDIA_ALIAS__ = false`（桌面那份必须**没有**）。
 
-跨版本识别在生产上的实测（同一份产物，**当时的**线上是 0.1.1；14:20 之后线上是 0.1.3，所以这三处入口应当自行解禁 —— 复测以 `/healthz.app` 为准）：连线上 0.1.1 → `serverApp='0.1.1'`、`probeFailed:false`，观战/移出成员/移出观战者三处 `ok:false reason:'older-server'`（点之前就识别到，因为生产 `/healthz` 有 CORS），`room.join` 仍 `ok:true`；连 0.1.3 → `确认本局信息` 正常开局。
+跨版本识别在生产上的实测（同一份产物，当时线上是 0.1.1）：连线上 0.1.1 → `serverApp='0.1.1'`、`probeFailed:false`，观战/移出成员/移出观战者三处 `ok:false reason:'older-server'`（点之前就识别到，因为生产 `/healthz` 有 CORS），`room.join` 仍 `ok:true`；连 0.1.3 → `确认本局信息` 正常开局。
+
+⚠️ **`/healthz.app` 不等于服务器能力**（2026-10-05 15:09 实测推翻了我自己先前那句"14:20 之后会自然解禁"）：
+线上 `/healthz.app` 报 `0.1.3`，但真 socket 问 `room.spectate` / `room.kick` / `room.removeSpectator` 三个全部回
+`BAD_MSG unknown type …`，而 `room.join` 回业务级 `ROOM_NOT_FOUND` —— 因为运维那两次部署是混合文件
+（`server/lobby.js` 已 0.1.3、`shared/protocol.js` 还是 0.1.1，`server/net.js:587` 查的是后者那张 `C2S` 表）。
+所以对客户端的实际行为是：**版本号点亮入口 → 玩家点一次拿到报错 → 被动学习才灰掉**。能自纠，但会多点一次。
+判定别只看版本号，用运维仓库的 `probe-server-capability.mjs`（自带正控制；注意 hello 的 `name` 要短，
+`'CapabilityProbe'` 会收不到 welcome、探测全超时）。
 
 自托管字体（已定案，不是待办）：**带 Chrome UA** 请求那条 css2 会得到 **421 个 @font-face / 112 个 woff2 / 4.84 MB**
 （不带 UA 的 11 个 / 43.3 MB 是未切片的旧格式，别拿它做决策）。游戏仓库 `tools/fetch-webfonts.mjs` 按这个把整套字形

@@ -263,3 +263,129 @@ jobs:
           name: stronghold-android-apk
           path: mobile/android/app/build/outputs/apk/debug/app-debug.apk
           retention-days: 7
+
+  # ---------- iPhone 版（**未签名** .ipa，玩家自己用 AltServer / SideStore 签）----------
+  #
+  # 为什么 CI 里不签名：免费个人签名用的是**玩家自己的 Apple ID**，我们替他签不了；
+  # 花钱的开发者账号（TestFlight）是另一条路，这里不走。本仓库是 PUBLIC，所以 macos-latest 不额外计费。
+  # 交付物 = `Payload/App.app` 压成的 .ipa，AltServer 读进去签好再装到手机（限制见 README「iOS」：7 天到期、
+  # 最多 3 个自签应用、续签要连电脑）。
+  #
+  # 前面四道闸门与另两个 job 逐字一致（GitHub 的 workflow 不支持 YAML 锚点，所以只能抄；
+  # 抄漏一处就是给玩家发一份没把关的包）。
+  ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: 下载并解压 payload
+        run: |
+          set -euo pipefail
+          URL="${{ github.event.inputs.payload_url }}"
+          [ -n "$URL" ] || URL="https://dl.lain42.top/downloads/stronghold-protocol/client/sp-client-payload.tar.gz"
+          echo "payload: $URL"
+          mkdir -p build/client/www
+          curl -fL --retry 3 --retry-delay 3 "$URL" -o payload.tar.gz
+          ls -lh payload.tar.gz
+          tar -xzf payload.tar.gz -C build/client/www
+          echo "解压文件数: $(find build/client/www -type f | wc -l)"
+
+      - name: 校验 payload 完整性
+        run: |
+          set -euo pipefail
+          for f in index.html js/runtime-config.js js/shell/picker.js js/net.js; do
+            test -f "build/client/www/$f" || { echo "缺 $f"; exit 1; }
+          done
+          ASSETS=$(find build/client/www/assets -type f 2>/dev/null | wc -l)
+          echo "素材文件数: $ASSETS"
+          test "$ASSETS" -gt 3000 || { echo "素材不完整（只有 $ASSETS 个）"; exit 1; }
+          echo "--- build.json ---"
+          cat build/client/www/build.json
+
+      - name: 校验 payload 版本（闸门）
+        run: |
+          set -euo pipefail
+          EXPECT="${{ github.event.inputs.expect_app }}"
+          WANT_SERVER="${{ github.event.inputs.server }}"
+          REPO=$(node -e 'console.log(require("./package.json").version)')
+          APP=$(node -e 'console.log(require("./build/client/www/build.json").game.app)')
+          GOT_SERVER=$(node -e 'console.log(require("./build/client/www/build.json").server)')
+          echo "payload: game.app=$APP server=$GOT_SERVER ；本仓库 version=$REPO"
+          if [ -n "$EXPECT" ]; then
+            [ "$APP" = "$EXPECT" ] || { echo "闸门：要求 expect_app=$EXPECT，payload 实为 $APP"; exit 1; }
+          else
+            [ "$APP" = "$REPO" ] || { echo "闸门：payload 是 $APP，本仓库已对齐 $REPO —— 换 payload，或传 expect_app=$APP 明确接受"; exit 1; }
+          fi
+          if [ -n "$WANT_SERVER" ]; then
+            [ "$GOT_SERVER" = "$WANT_SERVER" ] || { echo "闸门：要求 server=$WANT_SERVER，payload 实为 $GOT_SERVER"; exit 1; }
+          fi
+
+      - name: payload 出处（闸门）
+        shell: bash
+        run: node tools/check-payload-provenance.mjs build/client/www
+
+      - name: 零外部依赖（闸门）
+        shell: bash
+        run: node tools/check-payload-offline.mjs build/client/www
+
+      - name: 装 Capacitor 依赖
+        run: cd mobile && npm install
+
+      # 与 Android 同一件事：WKWebView 也是纯静态宿主，解不了无扩展名的 /media/…，不关掉就是全程静音。
+      - name: iOS 关闭 /media 别名
+        run: |
+          set -euo pipefail
+          F=build/client/www/js/runtime-config.js
+          test -f "$F" || { echo "缺 $F"; exit 1; }
+          printf '\n// Capacitor on iOS serves www/ as plain static files too, so the extension-less /media/… alias\n// would 404 and every BGM/sfx would be silent. Keep the direct /assets/audio/… URLs.\nglobalThis.__SP_MEDIA_ALIAS__ = false;\n' >> "$F"
+          grep -q "__SP_MEDIA_ALIAS__ = false" "$F" || { echo "flag 没写进去"; exit 1; }
+          echo "ios: /media alias disabled"
+
+      - name: 同步 web 资源到 iOS 工程
+        run: cd mobile && npx cap sync ios
+
+      # 不签名：CODE_SIGNING_ALLOWED=NO 让 xcodebuild 只编译，产物交给玩家自己的 AltServer 去签。
+      # scheme 是仓库里那份 App.xcscheme（模板不带共享 scheme，纯 CI 环境下 xcodebuild 不会替你生成）。
+      - name: 编 .app（不签名）
+        run: |
+          set -euo pipefail
+          cd mobile/ios/App
+          xcodebuild -list -project App.xcodeproj
+          xcodebuild -project App.xcodeproj -scheme App -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= PROVISIONING_PROFILE_SPECIFIER= \
+            build
+
+      - name: 打成 .ipa（并跑产物内闸门）
+        run: |
+          set -euo pipefail
+          APP=$(find mobile/ios/App/build/Build/Products -maxdepth 2 -name 'App.app' -type d | head -1)
+          test -n "$APP" || { echo "没编出 .app"; find mobile/ios/App/build -maxdepth 4 -name '*.app' | head; exit 1; }
+          echo "App: $APP  $(du -sh "$APP" | cut -f1)"
+          # 包内 Web 资源在哪个目录由 Capacitor 决定（wwwFolderName），找不到就报错，别拿空目录去"通过"闸门。
+          WWW=$(find "$APP" -maxdepth 1 -type d -name public | head -1)
+          test -n "$WWW" || { echo "在 .app 里找不到 public/ 目录"; ls "$APP"; exit 1; }
+          test -f "$WWW/index.html" || { echo "$WWW 里没有 index.html"; exit 1; }
+          echo "包内 Web 资源: $WWW（index.html $(wc -c < "$WWW/index.html") B）"
+          node tools/check-payload-offline.mjs "$WWW"
+          test -f "$WWW/js/shell/picker.js" || { echo "包里没选择页"; exit 1; }
+          grep -q "COMMUNITY_SERVERS" "$WWW/js/shell/picker-core.js" || { echo "包里没网友服播种表"; exit 1; }
+          rm -rf ipa && mkdir -p ipa/Payload
+          cp -R "$APP" ipa/Payload/
+          VER=$(node -e 'console.log(require("./package.json").version)')
+          OUT="Stronghold-$VER-ios-unsigned.ipa"
+          (cd ipa && ditto -c -k --keepParent Payload "../$OUT")
+          ls -lh "$OUT"
+          unzip -l "$OUT" | head -6
+          mv "$OUT" Stronghold-ios-unsigned.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stronghold-ios-ipa
+          path: Stronghold-ios-unsigned.ipa
+          retention-days: 7

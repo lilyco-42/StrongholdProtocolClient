@@ -900,15 +900,58 @@ describe('artifact-level offline gate (reads APK zip entries)', () => {
 
   test('CI checks the shipped bytes, not just the staged payload', () => {
     const wf = readFileSync(path.join(ROOT, '.github', 'workflows', 'build-clients.yml'), 'utf8');
-    const desktopJob = wf.slice(wf.indexOf('  desktop:'), wf.indexOf('  android:'));
-    const androidJob = wf.slice(wf.indexOf('  android:'));
-    assert.match(desktopJob, /check-payload-offline\.mjs build\/desktop\/win-unpacked\/resources\/www/, 'desktop: gate over the built exe');
-    assert.match(androidJob, /check-payload-offline\.mjs --zip mobile\/android\/app\/build\/outputs\/apk\/debug\/app-debug\.apk/, 'android: gate over the built apk');
-    for (const [name, job, build] of [['desktop', desktopJob, 'npm run pack'], ['android', androidJob, 'gradlew']]) {
-      const at = job.indexOf('产物内，闸门');
+    // Slice by job boundary: a test that reads "android to the end of the file" would silently pass on the ios job's
+    // steps once a third job exists.
+    const job = (name) => {
+      const start = wf.indexOf(`  ${name}:`);
+      assert.ok(start > 0, `workflow 里没有 ${name} job`);
+      const rest = wf.slice(start + 1);
+      const next = rest.search(/^ {2}[a-z][\w-]*:$/m);
+      return rest.slice(0, next === -1 ? rest.length : next);
+    };
+    const desktop = job('desktop');
+    const android = job('android');
+    const ios = job('ios');
+    assert.match(desktop, /check-payload-offline\.mjs build\/desktop\/win-unpacked\/resources\/www/, 'desktop: gate over the built exe');
+    assert.match(android, /check-payload-offline\.mjs --zip mobile\/android\/app\/build\/outputs\/apk\/debug\/app-debug\.apk/, 'android: gate over the built apk');
+    // iOS 的产物是一个目录包（.ipa 只是它的 zip 外壳），所以闸门直接扫 .app 里的 public/ —— 路径由那一步自己 find 出来。
+    assert.match(ios, /check-payload-offline\.mjs "\$WWW"/, 'ios: gate over the built .app');
+    for (const [name, src, build] of [['desktop', desktop, 'npm run pack'], ['android', android, 'gradlew'], ['ios', ios, 'xcodebuild']]) {
+      const at = src.indexOf('产物内闸门') >= 0 ? src.indexOf('产物内闸门') : src.indexOf('产物内，闸门');
       assert.ok(at > 0, `${name}: the artifact gate step exists`);
-      assert.ok(job.indexOf(build) < at, `${name}: the artifact gate runs after the binary exists`);
+      assert.ok(src.indexOf(build) < at, `${name}: the artifact gate runs after the binary exists`);
     }
+  });
+
+  // iOS 这一路是 2026-10-06 加的（有玩家用 iPhone）。它和另两路的差别全在"我们不签名"上，所以钉死三件事。
+  test('the iOS lane builds an unsigned .ipa and keeps the same gates', () => {
+    const wf = readFileSync(path.join(ROOT, '.github', 'workflows', 'build-clients.yml'), 'utf8');
+    const start = wf.indexOf('  ios:');
+    const ios = wf.slice(start);
+    assert.ok(start > 0, 'workflow 里要有 ios job');
+    assert.match(ios.slice(0, 200), /runs-on:\s*macos-latest/, 'iOS 只能在 macOS runner 上编');
+    // 与另两路同一套前置闸门，少一道就是给玩家发没把关的包。
+    for (const g of ['校验 payload 完整性', '校验 payload 版本（闸门）', 'payload 出处（闸门）', '零外部依赖（闸门）']) {
+      assert.ok(ios.includes(g), `ios job 缺前置闸门：${g}`);
+    }
+    // WKWebView 也是纯静态宿主：不写这个 flag，装机版就是全程静音（Android 侧同一个道理，见 §4.2）。
+    assert.match(ios, /__SP_MEDIA_ALIAS__ = false/, 'ios 也要关掉 /media 别名');
+    // 不签名是决定，不是遗漏：CI 里没有也不该有证书。⚠️ 只看**非注释行** —— 上面那句解释里也写着
+    // CODE_SIGNING_ALLOWED=NO，整段匹配会退化成"提到过就行"，把真实参数删掉测试照样绿（这次就这么翻过车）。
+    const code = ios.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n');
+    assert.match(code, /CODE_SIGNING_ALLOWED=NO/, 'ios 的 xcodebuild 必须显式关掉签名（注释不算）');
+    assert.match(code, /CODE_SIGN_IDENTITY=\s+/, 'CODE_SIGN_IDENTITY 要留空（给了值就是要签名）');
+    for (const forbidden of ['security import', 'create-keychain', 'allowProvisioningUpdates', 'CODE_SIGN_IDENTITY="', 'exportArchive', 'MATCH_PROFILE']) {
+      assert.ok(!code.includes(forbidden), `ios job 的代码里不该出现签名相关操作：${forbidden}`);
+    }
+    // scheme 得在仓库里：模板不带共享 scheme，纯 CI 环境下 xcodebuild 不会替你生成一个。
+    assert.ok(existsSync(path.join(ROOT, 'mobile', 'ios', 'App', 'App.xcodeproj', 'xcshareddata', 'xcschemes', 'App.xcscheme')),
+      'mobile/ios 要提交共享 scheme，否则 -scheme App 在 CI 上会找不到');
+    // 工程侧的 iOS 配置：ATS 放开明文（局域网/frp 的 ws://），方向只留横屏。
+    const plist = readFileSync(path.join(ROOT, 'mobile', 'ios', 'App', 'App', 'Info.plist'), 'utf8');
+    assert.match(plist, /NSAllowsArbitraryLoads[\s\S]{0,40}<true\/>/, 'ATS 要允许明文连接，否则 ws:// 自建服连不上');
+    assert.ok(!plist.includes('UIInterfaceOrientationPortrait'), 'iOS 只该声明横屏（游戏是横屏设计）');
+    assert.match(plist, /UIStatusBarHidden[\s\S]{0,40}<true\/>/, '状态栏要隐藏，对齐 Android 的隐藏 system bars');
   });
 });
 

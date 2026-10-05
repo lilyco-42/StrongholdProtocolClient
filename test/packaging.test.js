@@ -12,6 +12,7 @@
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import zlib from 'node:zlib';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -22,7 +23,7 @@ import { DATA_SHIM_JS, SIM_PRIVATE, findGameRoot, isGameRoot, readGameContract, 
 import { PATCHED_FILES, applyPayloadPatch, assertPatched } from '../tools/payload-patches.mjs';
 import { assembleClient, runtimeConfigSource, DEFAULT_SERVER, CLIENT_ROOT, SHELL_FILES, parseCommonArgs } from '../tools/package-client.mjs';
 import { desktopTargets } from '../tools/package-desktop.mjs';
-import { checkPayloadOffline } from '../tools/check-payload-offline.mjs';
+import { checkPayloadOffline, checkZipOffline } from '../tools/check-payload-offline.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -617,6 +618,110 @@ describe('payload offline gate (no third-party host in the boot path)', () => {
       assert.match(job, /check-payload-offline\.mjs/, `${name} job must run the offline gate`);
       assert.ok(job.indexOf('check-payload-offline.mjs') < job.indexOf('npm run pack') || job.indexOf('check-payload-offline.mjs') < job.indexOf('cap sync android'),
         `${name}: the gate has to run before the binary is built`);
+    }
+  });
+});
+
+describe('artifact-level offline gate (reads APK zip entries)', () => {
+  // The payload gate is not enough on its own: electron-builder puts the game www next to the 29 KB shell asar
+  // (resources/www), and Capacitor stores it *deflate-compressed* inside the apk. Measured on the published apk:
+  // grepping the whole file for "fonts.googleapis.com" gives 0, while the entry itself contains it twice — so an
+  // artifact gate that does not open the zip would have waved the old build through.
+
+  const CRC_TABLE = (() => {
+    const t = new Uint32Array(256);
+    for (let i = 0; i < 256; i++) { let c = i; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[i] = c >>> 0; }
+    return t;
+  })();
+  const crc32 = (buf) => { let c = 0xffffffff; for (const b of buf) c = CRC_TABLE[(c ^ b) & 0xff] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
+
+  /** A real (small) zip: local headers + central directory + EOCD, stored or deflate per entry. */
+  const makeZip = (items) => {
+    const locals = [], cents = [];
+    let offset = 0;
+    for (const { name, text, method = 8 } of items) {
+      const nameBuf = Buffer.from(name, 'utf8');
+      const raw = Buffer.from(text, 'utf8');
+      const data = method === 8 ? zlib.deflateRawSync(raw) : raw;
+      const crc = crc32(raw);
+      const lh = Buffer.alloc(30);
+      lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt16LE(method, 8);
+      lh.writeUInt32LE(crc, 14); lh.writeUInt32LE(data.length, 18); lh.writeUInt32LE(raw.length, 22);
+      lh.writeUInt16LE(nameBuf.length, 26);
+      locals.push(lh, nameBuf, data);
+      const ch = Buffer.alloc(46);
+      ch.writeUInt32LE(0x02014b50, 0); ch.writeUInt16LE(20, 4); ch.writeUInt16LE(20, 6);
+      ch.writeUInt16LE(method, 10); ch.writeUInt32LE(crc, 16);
+      ch.writeUInt32LE(data.length, 20); ch.writeUInt32LE(raw.length, 24);
+      ch.writeUInt16LE(nameBuf.length, 28); ch.writeUInt32LE(offset, 42);
+      cents.push(ch, nameBuf);
+      offset += lh.length + nameBuf.length + data.length;
+    }
+    const cen = Buffer.concat(cents);
+    const eocd = Buffer.alloc(22);
+    eocd.writeUInt32LE(0x06054b50, 0);
+    eocd.writeUInt16LE(items.length, 8); eocd.writeUInt16LE(items.length, 10);
+    eocd.writeUInt32LE(cen.length, 12); eocd.writeUInt32LE(offset, 16);
+    const p = path.join(mkdtempSync(path.join(tmpdir(), 'sp-apk-')), 'app-debug.apk');
+    writeFileSync(p, Buffer.concat([...locals, cen, eocd]));
+    return p;
+  };
+
+  const SLICES = 120;
+  const sheetText = Array.from({ length: SLICES }, (_, i) => `@font-face{font-family:'Noto Sans SC';src:url(/webfonts/google/f${i}.woff2);font-display: swap}`).join('\n');
+  const goodApk = (o = {}) => makeZip([
+    { name: 'assets/public/index.html', method: 0, text: o.remoteFont
+      ? '<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC">'
+      : '<link href="/webfonts/google/google.css">' },
+    ...(o.dropSheet ? [] : [{ name: 'assets/public/webfonts/google/google.css', text: sheetText }]),
+    ...(o.dropSliceFile ? [] : Array.from({ length: SLICES }, (_, i) => ({ name: `assets/public/webfonts/google/f${i}.woff2`, text: 'wOF2' }))),
+    { name: 'assets/public/data/assets.json', text: o.cdn ? '{"bgm":"https://dl.lain42.top/x.mp3"}' : '{"bgm":"assets/audio/x.mp3"}' },
+    { name: 'assets/public/assets/char/a.png', text: 'not-text-but-skipped' },
+    { name: 'classes.dex', text: 'irrelevant-to-the-gate' },
+  ]);
+
+  test('reads both stored and deflated entries and passes a mirrored apk', () => {
+    const r = checkZipOffline(goodApk());
+    assert.deepEqual(r.problems, []);
+    assert.equal(r.slices, SLICES);
+    assert.equal(r.woff2, SLICES);
+    assert.equal(r.entries, 1 + 1 + SLICES + 1 + 1 + 1, 'central directory count = index + sheet + slices + assets.json + png + dex');
+  });
+
+  test('finds the host inside a compressed entry (whole-file grep would miss it)', () => {
+    const r = checkZipOffline(goodApk({ remoteFont: true }));
+    assert.equal(r.problems.length, 1, JSON.stringify(r.problems));
+    assert.match(r.problems[0], /^index\.html 引用外部字体主机/);
+  });
+
+  test('a missing slice inside the apk fails, not just a missing slice on disk', () => {
+    const r = checkZipOffline(goodApk({ dropSliceFile: true }));
+    assert.match(r.problems.join('\n'), /个切片文件缺失/);
+  });
+
+  test('a CDN-absolute manifest inside the apk fails', () => {
+    const r = checkZipOffline(goodApk({ cdn: true }));
+    assert.match(r.problems.join('\n'), /assets\.json 引用 CDN 绝对地址 dl\.lain42\.top/);
+  });
+
+  test('a zip that is not shaped like the apk is refused, not silently green', () => {
+    const p = makeZip([{ name: 'whatever.txt', text: 'x' }]);
+    const r = checkZipOffline(p);
+    assert.equal(r.problems.length, 1);
+    assert.match(r.problems[0], /assets\/public\/index\.html/);
+    assert.throws(() => checkZipOffline((() => { const q = path.join(tmpdir(), 'not-a-zip.apk'); writeFileSync(q, 'nope'); return q; })()), /EOCD/);
+  });
+
+  test('CI checks the shipped bytes, not just the staged payload', () => {
+    const wf = readFileSync(path.join(ROOT, '.github', 'workflows', 'build-clients.yml'), 'utf8');
+    const desktopJob = wf.slice(wf.indexOf('  desktop:'), wf.indexOf('  android:'));
+    const androidJob = wf.slice(wf.indexOf('  android:'));
+    assert.match(desktopJob, /check-payload-offline\.mjs build\/desktop\/win-unpacked\/resources\/www/, 'desktop: gate over the built exe');
+    assert.match(androidJob, /check-payload-offline\.mjs --zip mobile\/android\/app\/build\/outputs\/apk\/debug\/app-debug\.apk/, 'android: gate over the built apk');
+    for (const [name, job, build] of [['desktop', desktopJob, 'npm run pack'], ['android', androidJob, 'gradlew']]) {
+      const at = job.indexOf('产物内，闸门');
+      assert.ok(at > 0, `${name}: the artifact gate step exists`);
+      assert.ok(job.indexOf(build) < at, `${name}: the artifact gate runs after the binary exists`);
     }
   });
 });

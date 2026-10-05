@@ -1,6 +1,6 @@
 # 打包客户端（exe / apk）
 
-把浏览器客户端和本机素材打进**桌面 / Android 可执行文件**：素材和代码从本地读取，房间、回合、联机仍然连服务器——默认 **`localhost:3000`**（自己在本机 / 局域网跑游戏服务器；官方远程服已下线）。
+把浏览器客户端和本机素材打进**桌面 / Android 可执行文件**：素材和代码从本地读取，房间、回合、联机仍然连服务器——`tools/package-client.mjs` 的代码默认值是 `localhost:3000`（自己开服用），**但发出去的产物不用它**：CI 传 `--server sp.lain42.top`，产物里的 `js/runtime-config.js` 写死 `globalThis.__SP_SERVER__ = "sp.lain42.top"`（2026-10-05 从发布 APK 解出核过）。
 
 ```
 npm run client:desktop      # → build/desktop/win-unpacked/（exe + 依赖目录，约 585 MB）
@@ -219,7 +219,7 @@ macOS / Linux 同理，把 `commandlinetools-win` 换成 `commandlinetools-mac` 
 | 主页 | 上下两个选项：**单人游戏**（预留——大厅 / 房间 / 模拟都在服务端，暂无"纯前端单机"实现，点击只给提示）、**多人游戏** |
 | 多人页 | 服务器列表 + **添加服务器**（名称 + 地址）、**直接连接**（只填地址，连上后不保存进列表）、**编辑**（改选中的自建服务器；内置与打包默认服不可改）、**刷新**（重新测一遍所有延迟，放在"返回"左边）、**返回** |
 | 地址写法 | `host`、`host:port`、`http(s)://…`、`ws(s)://…`，不用手写协议：不带协议时带端口的按 `ws://` 猜（`:443` 除外），公网域名默认 `wss://`；猜的协议不通会自动换另一种再试，命中后把那个地址存进 `sp.shell.server`（`shell/picker-core.js` 的 `ambiguousScheme` 决定哪些地址需要双协议探测） |
-| 列出的服务器 | 内置 `本机 / 局域网 localhost:3000`（官方远程服已下线）；`--server` 打包指定的地址会标"默认"；玩家自己添加的服务器（按 `js/net.js` 的 `toWsUrl()` 归一化，存在客户端本地；旧的"只存地址字符串"列表在读取时会升级成 `{name, address}`） |
+| 列出的服务器 | 内置项只有 `本机 / 局域网 localhost:3000`（`shell/picker-core.js` 的 `BUILTIN_SERVERS`，给自己开服的人）；`--server` 打包指定的地址会标"默认"并排在前面（**当前发布的产物是 `sp.lain42.top`**）；玩家自己添加的服务器（按 `js/net.js` 的 `toWsUrl()` 归一化，存在客户端本地；旧的"只存地址字符串"列表在读取时会升级成 `{name, address}`） |
 | 探测 | 直接开一条 `/ws` 连接（和游戏同一条通道，因此不依赖服务器 CORS），失败重试一次；绿点 = 真的能连进去。若服务器给 `/healthz` 加了 `Access-Control-Allow-Origin`，还会显示 `v<app> · 在线 n · 房间 n`（不加只是少一行信息，控制台会有一条 CORS 报错，页面已忽略） |
 | 记住上次 | 桌面端勾"记住并直接进入"后下次直接进游戏；想换服务器按 **F2**，或用 `--choose-server` 启动。Android 没有 F2，所以每次都显示、默认不记住（否则玩家换了服务器就回不去了） |
 | 优先级 | `--server <地址>`（本次运行）> `?server=<地址>` > 菜单记住的地址 > 打包默认地址 |

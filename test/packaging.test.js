@@ -404,6 +404,57 @@ describe('desktop shell: a stable loopback origin keeps localStorage', () => {
     }
   });
 
+  test('the shell serves the mirrored font sheet the way a font host does (mime + long cache, and no escape)', async () => {
+    // Why this test exists: the whole point of `public/webfonts/google/` is that the packaged client never talks to
+    // fonts.googleapis.com / fonts.gstatic.com. `check-payload-offline.mjs` proves the bytes are IN the payload, but
+    // nothing proved the Electron shell actually serves that directory usefully — dropping 'webfonts' from
+    // LONG_CACHE_DIRS or losing the .woff2 mime is silent (the page still renders, just re-fetching or rejecting faces).
+    const { createStaticServer, LONG_CACHE, LONG_CACHE_DIRS } = await import('../desktop/serve.mjs');
+    assert.ok(LONG_CACHE_DIRS.has('webfonts'), "'webfonts' must stay in the long-cache set — dropping it is silent");
+    const root = mkdtempSync(path.join(tmpdir(), 'sp-webfonts-'));
+    writeFileSync(path.join(root, 'index.html'), HTML);
+    mkdirSync(path.join(root, 'webfonts', 'google'), { recursive: true });
+    writeFileSync(path.join(root, 'webfonts', 'google', 'google.css'),
+      "@font-face{font-family:'Noto Sans SC';src:url(/webfonts/google/f0.woff2)}");
+    writeFileSync(path.join(root, 'webfonts', 'google', 'f0.woff2'), 'wOF2');
+
+    const get = (urlPath) => new Promise((resolve, reject) => {
+      http.get(`${served.url}${urlPath}`, (r) => {
+        let d = Buffer.alloc(0);
+        r.on('data', (c) => { d = Buffer.concat([d, c]); });
+        r.on('end', () => resolve({ status: r.statusCode, type: r.headers['content-type'], cache: r.headers['cache-control'], body: d.toString() }));
+      }).on('error', reject);
+    });
+
+    let served;
+    try {
+      served = await createStaticServer({ root, port: 0, log: { warn() {}, error() {} } });
+
+      const sheet = await get('/webfonts/google/google.css');
+      assert.equal(sheet.status, 200, 'the local sheet the index.html <link> points at must be served');
+      assert.match(sheet.type || '', /text\/css/, 'Chromium refuses a stylesheet that is not text/css');
+      assert.equal(sheet.cache, LONG_CACHE, 'a 421-face sheet re-fetched on every load is a regression, not a detail');
+
+      const face = await get('/webfonts/google/f0.woff2');
+      assert.equal(face.status, 200);
+      assert.equal(face.type, 'font/woff2', 'a wrong mime makes the font silently fall back to a system face');
+      assert.equal(face.cache, LONG_CACHE);
+
+      // Positive control: the long cache must belong to the mirrored dirs only. Without this line, making every
+      // response long-cacheable would keep the four assertions above green.
+      const page = await get('/index.html');
+      assert.equal(page.status, 200);
+      assert.notEqual(page.cache, LONG_CACHE, 'index.html must not inherit the long cache');
+
+      const escape = await get('/webfonts/google/../../../../../../windows/win.ini');
+      assert.ok(escape.status === 403 || escape.status === 404, `路径逃逸不该读出根外文件（${escape.status}）`);
+      assert.ok(!/\[fonts\]/.test(escape.body), '逃逸请求拿到内容就是真的开口子了');
+    } finally {
+      if (served) await served.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('the /media alias resolves to the real audio file (the desktop shell has no server/index.js)', async () => {
     const { createStaticServer, MEDIA_PREFIX, AUDIO_EXTS } = await import('../desktop/serve.mjs');
     assert.equal(MEDIA_PREFIX, '/media/');

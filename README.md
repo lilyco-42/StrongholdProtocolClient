@@ -65,8 +65,20 @@ gh api repos/lilyco-42/StrongholdProtocolClient/releases/tags/v0.1.3-c11 --jq '.
 | 方向 | 锁横屏（`Info.plist` 只声明 LandscapeLeft/Right）；刘海区已按 `viewport-fit=cover` + safe-area 处理 |
 | 连自建服 | 已放开 ATS，所以 `ws://192.168.1.9:3000` 这种明文地址能连（对应安卓的 `allowMixedContent`） |
 
-下载入口和 exe/apk 在同一个 Release 页（文件名形如 `Stronghold-<版本>-ios-unsigned.ipa`），
-GitHub 与 OSS 两条地址的选法见上面那张表。**签名请自己完成：我们不提供证书、不代签、也不要拿这个包去上架** ——
+下载（和 exe/apk 在同一个 Release 页 `v0.1.3-c12`）：
+
+```
+https://github.com/lilyco-42/StrongholdProtocolClient/releases/download/v0.1.3-c12/Stronghold-0.1.3-c12-ios-unsigned.ipa
+```
+
+装到手机的步骤（玩家自己做，我们不提供证书也不代签）：
+
+1. 电脑装 **AltServer**（macOS / Windows 都有）或 **Sideloadly**，登录**你自己的 Apple ID**（免费账号即可，不用开发者账号）。
+2. 手机数据线连电脑 → 信任这台电脑 → 把上面那个 `.ipa` 拖进 AltServer / Sideloadly → 它会用你的 Apple ID 现签再装。
+3. 手机上「设置 → 通用 → VPN 与设备管理」里点开你那个 Apple ID 的描述文件 → 信任 → 打开 App。
+4. **每 7 天要重复一次第 2 步**（免费签名的有效期是 Apple 定的）；同一个免费 Apple ID 名下最多 3 个自签应用。
+
+**签名请自己完成：我们不提供证书、不代签、也不要拿这个包去上架** ——
 包里的《明日方舟》素材版权归鹰角/Yostar，仅供个人非商业自用。
 
 ### 桌面版几个省事的小知识

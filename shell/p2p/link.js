@@ -36,16 +36,29 @@ function loadTrystero() {
  * @param {object} [options]
  * @param {string} [options.appId] Trystero app id — all peers must agree, so change it and nobody finds anybody.
  * @param {string} [options.roomId]
+ * @param {Array<object>|null} [options.iceServers] STUN servers. **Pass these or get nothing useful in China**:
+ *   Trystero's built-in list is `stun.l.google.com` ×3 + Cloudflare, and a STUN that does not answer means no
+ *   server-reflexive candidate — only `host`, which cannot cross a network boundary. Measured 2026-10-06 from this
+ *   machine: 小米 34 ms / B站 26 ms / 芒果TV 23 ms all answer, so the domestic list is the one to ship.
+ *   Supplying this REPLACES Trystero's defaults (peer.ts: `rtcConfig.iceServers ?? defaultIceServers.concat(...)`),
+ *   so include a fallback if you still want the overseas ones.
  * @param {Array<object>|null} [options.turnConfig] RFC 8656 TURN servers, used only for the pairs that cannot
  *   connect directly. Omit for the zero-cost path (public relays + direct connections only).
  * @param {number} [options.republishMs]
  * @returns {Promise<object>} a handle — see the returned object below.
  */
-export async function openLobby({ appId = LOBBY_APP_ID, roomId = LOBBY_ROOM, turnConfig = null, republishMs = REPUBLISH_MS } = {}) {
+export async function openLobby({
+  appId = LOBBY_APP_ID,
+  roomId = LOBBY_ROOM,
+  iceServers = null,
+  turnConfig = null,
+  republishMs = REPUBLISH_MS,
+} = {}) {
   const { joinRoom, selfId } = await loadTrystero();
 
   const config = { appId };
   if (Array.isArray(turnConfig) && turnConfig.length) config.turnConfig = turnConfig;
+  if (Array.isArray(iceServers) && iceServers.length) config.rtcConfig = { iceServers };
 
   const room = joinRoom(config, roomId);
   const advert = room.makeAction('advert');

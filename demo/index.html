@@ -16,17 +16,21 @@
         font-size: 16px; line-height: 1.6;
       }
       h1 { font-size: 1.05rem; margin: 0 0 calc(var(--g) * 2); font-weight: 600; }
+      h2 { font-size: 0.7rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin: 0 0 var(--g); }
       .card { border: 1px solid var(--border); background: var(--panel); border-radius: 12px; padding: calc(var(--g) * 2); margin-bottom: calc(var(--g) * 2); }
+      .card.wide { padding: calc(var(--g) * 1.5); }
       .verdict { font-size: 1.35rem; font-weight: 700; margin: 0 0 var(--g); line-height: 1.35; }
       .verdict.ok { color: var(--ok); } .verdict.warn { color: var(--warn); } .verdict.bad { color: var(--danger); }
       .hint { color: var(--muted); font-size: 0.8125rem; }
-      dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: var(--g); margin: 0; }
-      dt { color: var(--muted); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em; }
-      dd { margin: 0 0 var(--g); font-variant-numeric: tabular-nums; }
-      code { background: #0b0e12; border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; font-size: 0.9em; word-break: break-all; }
+      dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: var(--g); margin: 0; }
+      dt { color: var(--muted); font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em; }
+      dd { margin: 0 0 var(--g); font-variant-numeric: tabular-nums; font-size: 0.9375rem; word-break: break-all; }
+      code { background: #0b0e12; border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; font-size: 0.85em; word-break: break-all; }
       ul { margin: var(--g) 0 0; padding-left: 18px; } li { font-size: 0.8125rem; }
+      pre { margin: var(--g) 0 0; padding: var(--g); background: #0b0e12; border: 1px solid var(--border); border-radius: 8px;
+            font-size: 0.72rem; line-height: 1.5; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
 
-      label { display: block; color: var(--muted); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: var(--g); }
+      label { display: block; color: var(--muted); font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: var(--g); }
       .code-input {
         width: 100%; padding: 14px 16px; font-size: 2rem; font-weight: 700; letter-spacing: 0.35em; text-align: center;
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase;
@@ -41,37 +45,35 @@
       button.primary { background: var(--ok); border-color: var(--ok); color: #04120a; }
       button:focus-visible { outline: 2px solid var(--ok); outline-offset: 2px; }
       button:disabled { opacity: 0.5; cursor: not-allowed; }
-      .code-big {
-        font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 2.2rem; font-weight: 700;
-        letter-spacing: 0.3em; color: var(--ok); margin: var(--g) 0;
-      }
+      .code-big { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 2.2rem; font-weight: 700;
+                  letter-spacing: 0.3em; color: var(--ok); margin: var(--g) 0; }
+      .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 0.75rem; border: 1px solid var(--border); }
+      .badge.ok { color: var(--ok); border-color: var(--ok); }
+      .badge.bad { color: var(--danger); border-color: var(--danger); }
+      .badge.warn { color: var(--warn); border-color: var(--warn); }
       @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
     </style>
   </head>
   <body>
-    <h1>P2P 直连自检 —— 不经过任何服务器</h1>
+    <h1>P2P 直连自检</h1>
 
-    <!-- 入房前：6 位字母房间码 -->
     <section id="joinCard" class="card">
       <div id="joinVerdict" class="verdict warn">输入或生成一个 6 位房间码</div>
-      <div id="joinHint" class="hint">
+      <div class="hint">
         两端输入<b>同一个</b>房间码才会相遇。要测真实穿透，请让两台设备处在<b>不同网络</b>：
         一端家宽/WiFi，另一端走手机<b>蜂窝数据（关掉 WiFi）</b>。
       </div>
-
       <div style="margin-top: calc(var(--g) * 2)">
         <label for="code">房间码（6 位字母）</label>
         <input id="code" class="code-input" inputmode="latin" autocomplete="off" autocapitalize="characters"
                spellcheck="false" maxlength="6" placeholder="ABCDEF" />
       </div>
-
       <div class="row">
         <button id="gen" type="button">随机生成</button>
         <button id="go" class="primary" type="button">进入房间</button>
       </div>
     </section>
 
-    <!-- 入房后 -->
     <section id="liveCard" class="card" hidden>
       <div id="verdict" class="verdict warn">等待对端…</div>
       <div id="explain" class="hint"></div>
@@ -79,8 +81,27 @@
       <div class="hint">把这个房间码给对方，让他在自己设备上输入同一个码。</div>
     </section>
 
+    <!-- 没有对端时也要有信息可看 —— 上一版这里是一片空白，等于让人拿着瞎的包去试 -->
+    <section id="diagCard" class="card" hidden>
+      <h2>本机诊断（无需对端）</h2>
+      <dl>
+        <div><dt>信令中继</dt><dd id="relayCount">—</dd></div>
+        <div><dt>STUN 自检</dt><dd id="stunState">—</dd></div>
+        <div><dt>本端公网地址</dt><dd id="myPublic">—</dd></div>
+        <div><dt>候选类型</dt><dd id="myCands">—</dd></div>
+        <div><dt>已连对端</dt><dd id="peerCount">0</dd></div>
+        <div><dt>收到广告</dt><dd id="advCount">0</dd></div>
+      </dl>
+      <div class="hint" id="diagHint"></div>
+      <pre id="relayList" hidden></pre>
+      <div class="hint" style="margin-top:8px">
+        注：<code>navigator.connection.effectiveType</code> 是<b>带宽档位估计</b>，手机连 WiFi 时也会显示 "4g"，
+        它<b>区分不了 WiFi 与蜂窝</b>。要确认两端真的在不同网络，看<b>本端公网地址</b> —— 两端不一样才算数。
+      </div>
+    </section>
+
     <section id="iceCard" class="card" hidden>
-      <h2 style="font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0 0 var(--g)">链路自检</h2>
+      <h2>链路自检（有对端后）</h2>
       <dl>
         <div><dt>本端候选</dt><dd id="localType">—</dd></div>
         <div><dt>对端候选</dt><dd id="remoteType">—</dd></div>
@@ -90,10 +111,15 @@
       <div class="hint" id="iceHint"></div>
     </section>
 
-    <section id="roomsCard" class="card" hidden>
-      <h2 style="font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0 0 var(--g)">房间列表</h2>
-      <ul id="rooms"></ul>
-      <div class="hint">这一步走公共中继撮合，与你的业务数据无关；连上之后数据只走两端直连。</div>
+    <section id="errCard" class="card" hidden>
+      <h2>连接错误</h2>
+      <pre id="errText"></pre>
+      <div class="hint">出现这段 = <b>信令通了、但 WebRTC 连不上</b>，也就是对端在对称 NAT / 运营商 CGNAT 后面。</div>
+    </section>
+
+    <section id="logCard" class="card" hidden>
+      <h2>时间线</h2>
+      <ul id="timeline"></ul>
     </section>
 
     <script>
@@ -120,22 +146,23 @@
 
       const randomCode = () =>
         Array.from({ length: CODE_LEN }, () => ALPHABET[Math.floor(Math.random() * ALPHABET.length)]).join('');
+      const clean = (raw) => String(raw ?? '').toUpperCase().replace(/[^A-Z]/g, '').slice(0, CODE_LEN);
 
-      const clean = (raw) =>
-        String(raw ?? '').toUpperCase().replace(/[^A-Z]/g, '').slice(0, CODE_LEN);
+      const t0 = Date.now();
+      const timeline = [];
+      const stamp = () => `+${((Date.now() - t0) / 1000).toFixed(1)}s`;
+      const mark = (text) => {
+        timeline.push(`${stamp()}  ${text}`);
+        $('timeline').innerHTML = timeline.map((l) => `<li>${l}</li>`).join('');
+      };
 
       $('code').addEventListener('input', (e) => {
         const atEnd = e.target.selectionStart === e.target.value.length;
         e.target.value = clean(e.target.value);
         if (atEnd) e.target.setSelectionRange(e.target.value.length, e.target.value.length);
       });
+      $('gen').addEventListener('click', () => { $('code').value = randomCode(); $('code').focus(); });
 
-      $('gen').addEventListener('click', () => {
-        $('code').value = randomCode();
-        $('code').focus();
-      });
-
-      // Pre-fill from ?code=XXXXXX so a shared link needs no typing.
       const preset = clean(new URLSearchParams(location.search).get('code'));
       if (preset) $('code').value = preset;
       if (preset.length === CODE_LEN) setTimeout(() => $('go').click(), 50);
@@ -144,8 +171,8 @@
         if (e.key === 'Enter' && CODE_RE.test($('code').value)) $('go').click();
       });
 
-      // What the candidate type actually means. Spelling it out in the page is the point: whoever runs this on the
-      // far side reads the verdict themselves, instead of trusting someone else's reading of getStats().
+      // What the candidate type actually means for this test. Spelling it out in the page is the point: whoever runs
+      // this on the far side reads the verdict themselves, instead of trusting someone else's reading of getStats().
       const MEANING = {
         host: ['bad', '本机/局域网直连 —— NAT 没有参与，这次不算数',
           '两端在同一台机器或同一个局域网里。要测真实穿透，必须让一端走蜂窝数据。'],
@@ -156,9 +183,54 @@
 
       let lobby = null;
       let state = null;
+      let trystero = null;
+      let stun = null;
 
-      const readIce = async () => {
+      /**
+       * Trystero 自带的 ICE 服务器是 `stun.l.google.com` ×3 + Cloudflare —— 全在境外。
+       * STUN 不回话 ⇒ 拿不到 srflx 候选 ⇒ 只剩 host ⇒ **永远跨不过网络边界**。
+       * 这四个是本机 2026-10-06 实测会应答的（小米 34ms / B站 26ms / 芒果TV 23ms / Cloudflare 193ms）。
+       * 传入它会**替换**掉 Trystero 的默认列表，所以这里保留了 Cloudflare 兜底。
+       */
+      const ICE_SERVERS = [
+        { urls: 'stun:stun.miwifi.com:3478' },
+        { urls: 'stun:stun.chat.bilibili.com:3478' },
+        { urls: 'stun:stun.hitv.com:3478' },
+        { urls: 'stun:stun.cloudflare.com:3478' },
+      ];
+
+      /**
+       * 用一条一次性连接问 STUN：「我从外面看是什么样？」
+       * **不需要对端** —— 这正是"连不上"之后你处在的状态，也是上一版页面最该有却没有的东西。
+       */
+      const stunSelfCheck = async () => {
+        const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+        pc.__probe = true; // 别让链路自检把它当成真正的对端连接
+        try {
+          pc.createDataChannel('probe');
+          await pc.setLocalDescription(await pc.createOffer());
+          await new Promise((res) => {
+            const done = () => { if (pc.iceGatheringState === 'complete') res(); };
+            pc.addEventListener('icegatheringstatechange', done);
+            setTimeout(res, 5000); // 有些网络永远到不了 complete，超时本身也是一个结果
+          });
+          const stats = await pc.getStats();
+          const types = new Set();
+          const mapped = [];
+          stats.forEach((r) => {
+            if (r.type !== 'local-candidate') return;
+            types.add(r.candidateType);
+            if (r.candidateType === 'srflx' && r.address) mapped.push(`${r.address}:${r.port}`);
+          });
+          return { types: [...types].sort(), mapped: [...new Set(mapped)], gathering: pc.iceGatheringState };
+        } finally {
+          pc.close();
+        }
+      };
+
+      const selectedPair = async () => {
         for (const pc of window.__pcs ?? []) {
+          if (pc.__probe) continue; // STUN 自检用的那条一次性连接不是对端
           const stats = await pc.getStats();
           const byId = new Map();
           stats.forEach((r) => byId.set(r.id, r));
@@ -171,37 +243,71 @@
           const local = byId.get(pair.localCandidateId);
           const remote = byId.get(pair.remoteCandidateId);
           return {
-            localType: local?.candidateType ?? '?',
-            remoteType: remote?.candidateType ?? '?',
-            protocol: local?.protocol ?? '?',
-            rtt: pair.currentRoundTripTime,
+            localType: local?.candidateType ?? '?', remoteType: remote?.candidateType ?? '?',
+            protocol: local?.protocol ?? '?', rtt: pair.currentRoundTripTime,
           };
         }
         return null;
       };
 
+      const relayCount = () => {
+        try { return Object.keys(trystero?.getRelaySockets?.() ?? {}).length; } catch { return -1; }
+      };
+      const relayUrls = () => {
+        try { return Object.keys(trystero?.getRelaySockets?.() ?? {}); } catch { return []; }
+      };
+
       const render = async () => {
         if (!state) return;
         const peers = state.peerIds ?? [];
-        $('codeBig').textContent = state.roomId ?? '';
-        $('rooms').innerHTML = (state.rooms ?? []).length
-          ? state.rooms.map((r) => `<li>${r.name} — <code>${r.address}</code></li>`).join('')
-          : '<li style="color:var(--muted)">还没有人公开地址。</li>';
+
+        // —— 本机诊断：不依赖对端 ——
+        const relays = relayCount();
+        $('relayCount').textContent = relays < 0 ? '读取失败' : `${relays} 个`;
+
+        if (stun) {
+          const hasSrflx = stun.types.includes('srflx');
+          $('stunState').innerHTML = hasSrflx
+            ? '<span class="badge ok">拿到公网映射</span>'
+            : '<span class="badge bad">无应答</span>';
+          $('myPublic').textContent = stun.mapped.length ? stun.mapped.join(' / ') : '（没有）';
+          $('myCands').textContent = stun.types.length ? stun.types.join(', ') : `（未收集到，gathering=${stun.gathering}）`;
+        }
+
+        $('peerCount').textContent = String(peers.length);
+        $('advCount').textContent = String((state.rooms ?? []).length);
+
+        if (relays === 0) {
+          $('diagHint').innerHTML = '<span class="badge bad">信令未通</span> 一个中继都没连上 —— 这台设备到不了公共中继。任何"连不上"的结论都先卡在这一步。';
+        } else if (stun && !stun.types.includes('srflx')) {
+          $('diagHint').innerHTML = '<span class="badge bad">无公网映射</span> 信令通了，但 STUN 没回话 —— 本机只有 host 候选，<b>跨网络不可能连上</b>。这是必须先修的一条。';
+        } else if (relays > 0) {
+          $('diagHint').innerHTML = '<span class="badge ok">信令已通 + 有公网映射</span> 具备跨网络直连的前置条件。剩下的看对端。';
+          $('relayList').hidden = false;
+          $('relayList').textContent = relayUrls().join('\n');
+        }
+
+        // —— 对端相关 ——
+        if (state.lastError) {
+          $('errCard').hidden = false;
+          $('errText').textContent = JSON.stringify(state.lastError, null, 2);
+        }
 
         if (!peers.length) {
           $('verdict').className = 'verdict warn';
-          $('verdict').textContent = '等待对端…';
-          $('explain').textContent = '让对方在他自己的设备上输入同一个房间码。两端要在【不同网络】才会走真实穿透。';
+          $('verdict').textContent = relays > 0 ? '信令已通，等待对端…' : '中继未连接，等待重试…';
+          $('explain').textContent = relays > 0
+            ? '让对方在他自己的设备上输入同一个房间码。两端要在【不同网络】才会走真实穿透。'
+            : '本机连不上公共中继，先把网络恢复（或换一台设备）再看。';
           $('iceCard').hidden = true;
           return;
         }
 
         $('iceCard').hidden = false;
-        const ice = await readIce();
+        const ice = await selectedPair();
         if (!ice) {
           $('verdict').className = 'verdict warn';
           $('verdict').textContent = '已连上，ICE 结果还没收敛…';
-          $('explain').textContent = '';
           return;
         }
         $('localType').textContent = ice.localType;
@@ -230,21 +336,45 @@
         $('joinVerdict').textContent = `正在进入 ${code} …`;
 
         try {
-          const { openLobby } = await import('./p2p/link.js');
-          lobby = await openLobby({ appId: APP_ID, roomId: code });
+          mark('开始加载 P2P 模块');
+          const [{ openLobby }, t] = await Promise.all([
+            import('./p2p/link.js'),
+            import('./p2p/vendor/trystero.js'),
+          ]);
+          trystero = t;
+          mark(`模块就绪，Trystero 自带 ${t.defaultRelayUrls.length} 个中继`);
+
+          // 先做本机 STUN 自检（不需要对端）。放在入房之前，是为了让"连不上"时能立刻分清
+          // 是**本机拿不到公网映射**，还是对端的问题 —— 这两种原因的修法完全不同。
+          mark('STUN 自检中…');
+          stun = await stunSelfCheck();
+          mark(`STUN: ${stun.types.join(', ') || '无应答'}${stun.mapped.length ? ` 公网 ${stun.mapped[0]}` : ''}`);
+
+          lobby = await openLobby({ appId: APP_ID, roomId: code, iceServers: ICE_SERVERS });
           state = lobby.state();
-          lobby.subscribe((s) => { state = s; render(); });
+          mark(`已入房 ${code}`);
+          lobby.subscribe((s) => {
+            if (s.peerIds.length !== (state?.peerIds?.length ?? 0)) {
+              mark(s.peerIds.length ? `已连对端 ${s.peerIds.length} 个` : '对端已离开');
+            }
+            if (s.lastError && !state?.lastError) mark(`onJoinError: ${JSON.stringify(s.lastError).slice(0, 80)}`);
+            state = s;
+            render();
+          });
           lobby.publish({ name: code, address: '' });
+          mark('已发布广告');
 
           $('joinCard').hidden = true;
           $('liveCard').hidden = false;
-          $('roomsCard').hidden = false;
+          $('diagCard').hidden = false;
+          $('logCard').hidden = false;
           render();
-          setInterval(render, 1000); // keep the ICE readout live; the selected pair can settle late
+          setInterval(render, 1000); // 中继数与 ICE 都是会变的，读一次就冻住等于骗自己
 
-          globalThis.__p2p = { lobby, state: () => state, ice: readIce, code };
+          globalThis.__p2p = { lobby, state: () => state, ice: selectedPair, stun: () => stun, relayCount, code };
         } catch (error) {
           $('joinVerdict').textContent = `启动失败：${String((error && error.message) || error)}`;
+          mark(`启动失败 ${String((error && error.message) || error)}`);
           $('go').disabled = false;
           $('gen').disabled = false;
         }

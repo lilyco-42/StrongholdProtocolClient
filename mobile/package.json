@@ -1,6 +1,6 @@
 {
   "name": "stronghold-protocol-mobile",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "description": "卫戍协议：盟约 · 装机客户端（Capacitor 壳：本地静态资源 + 联机走 sp.lain42.top；Android 与 iOS 共用）",
   "license": "GPL-3.0-or-later",

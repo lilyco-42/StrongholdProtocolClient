@@ -259,6 +259,23 @@ describe('the server probe', { skip: GAME_ROOT ? false : 'no Stronghold-Protocol
     assert.ok(list.every((e) => e.name), 'seeded rows need names, or the card shows a bare URL');
   });
 
+  test('an install seeded with the v1 batch gets only the entries added since, and not a second copy', async () => {
+    // The point of bumping SEED_VERSION: a player who already received batch 1 must receive the new rows on the
+    // next launch, while everything they already has stays exactly as it is (same name, same position).
+    assert.ok(SEED_VERSION > 1, 'this lane needs a bumped batch marker to mean anything');
+    assert.ok(COMMUNITY_SERVERS.length > 5, 'the fixture assumes batch 1 was the first five entries');
+    const batch1 = COMMUNITY_SERVERS.slice(0, 5);
+    const mine = [{ name: '我自己填的 mistyra', address: batch1[0].address }, ...batch1.slice(1)];
+    const store = await launchWith({ [K_SEED]: '1', [K_LIST]: JSON.stringify(mine) });
+    const list = JSON.parse(store[K_LIST]);
+    assert.equal(store[K_SEED], String(SEED_VERSION), 'the marker moves to the new batch, or it will re-seed forever');
+    const added = list.filter((e) => !batch1.some((b) => b.address === e.address));
+    assert.deepEqual(added.map((e) => e.address), COMMUNITY_SERVERS.slice(5).map((e) => e.address),
+      'exactly the new fan servers arrive, nothing duplicated');
+    assert.equal(list[0].name, '我自己填的 mistyra', 'the player renamed it; seeding must not overwrite that');
+    assert.equal(list.length, batch1.length + COMMUNITY_SERVERS.length - 5);
+  });
+
   test('a server the player deleted is not planted back on the next launch', async () => {
     const store = await launchWith({});
     const list = JSON.parse(store[K_LIST]);

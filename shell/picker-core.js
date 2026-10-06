@@ -21,12 +21,13 @@ export const BUILTIN_SERVERS = Object.freeze([
 ]);
 
 /** Bump when COMMUNITY_SERVERS gains an entry existing installs should also get (a deleted one stays deleted). */
-export const SEED_VERSION = 1;
+export const SEED_VERSION = 2;
 
 /**
- * Servers run by other people, measured with the shipped picker code on 2026-10-05 (all five opened a `/ws`
- * handshake; `ark-proto.stardust.matce.cn` answers HTTP but has no game service on `/ws`, and
- * `xymx1234.github.io/stronghold-standalone/` is a static page, not a server — neither is listed here).
+ * Servers run by other people, measured with the shipped picker code on 2026-10-05 and re-measured on 2026-10-06
+ * (all eight opened a `/ws` handshake and answered `hello` with `welcome`; `ark-proto.stardust.matce.cn` answers
+ * HTTP but its `/ws` is refused with 403 — it gates the page behind a play code first — and
+ * `xymx1234.github.io/stronghold-standalone/` is a static page, not a server, so neither is listed here).
  *
  * They are *seeded into the editable list* (`K_LIST`), not added to `BUILTIN_SERVERS`: a server that goes dark must
  * be something the player can delete for good, and a built-in row cannot be deleted or edited. Addresses below are
@@ -39,6 +40,18 @@ export const COMMUNITY_SERVERS = Object.freeze([
   { name: '网友服 · rainya:10166', address: 'https://sp.rainya.me:10166/play' },
   { name: '网友服 · linxia', address: 'https://wei.linxia.dev/' },
   { name: '网友服 · xiaolubao', address: 'https://game.xiaolubao.com/' },
+  // 2026-10-06 新增：这三台实测 `/ws` 能握手并回 welcome（healthz 分别报 0.1.3 / 0.1.3 / 0.1.3.3）。
+  // 评论区说它们带 匹配 / 倍速 / 外援干员 / 官方 3D 素材等改动 —— 那些是服主自己的功能，本客户端没有实测，
+  // 所以名字里只写主机，不替他们宣称功能。
+  { name: '网友服 · nekotc', address: 'https://sp.nekotc.cn' },
+  { name: '网友服 · chiruno', address: 'https://ark.chiruno.com/' },
+  { name: '网友服 · ausevaywstr', address: 'https://ausevaywstr.top/' },
+  // 裸 IP + http：`addressError` 允许 host:port，Android 是 usesCleartextTraffic="true"、iOS ATS 也放开，
+  // 所以三端都能连（实测 ws://183.66.27.19:20522/ws 回 welcome）。
+  { name: '网友服 · 183.66.27.19', address: 'http://183.66.27.19:20522/' },
+  // cranepaul 群里发的是 https://game.cranepaul.dpdns.org/，但它把 /ws 301 到 sk.…:8443/ws，
+  // 而 WebSocket 握手不跟随重定向 —— 填 game. 那个必然连不上，所以这里播种它自己的规范地址。
+  { name: '网友服 · cranepaul', address: 'https://sk.cranepaul.dpdns.org:8443/' },
 ]);
 
 /**

@@ -87,6 +87,7 @@
       <dl>
         <div><dt>信令中继</dt><dd id="relayCount">—</dd></div>
         <div><dt>STUN 自检</dt><dd id="stunState">—</dd></div>
+        <div><dt>NAT 行为</dt><dd id="natBehavior">—</dd></div>
         <div><dt>本端公网地址</dt><dd id="myPublic">—</dd></div>
         <div><dt>候选类型</dt><dd id="myCands">—</dd></div>
         <div><dt>已连对端</dt><dd id="peerCount">0</dd></div>
@@ -216,13 +217,33 @@
           });
           const stats = await pc.getStats();
           const types = new Set();
-          const mapped = [];
+          const mapped = new Set();
+          // relatedPort 是 srflx 候选的**本底本地端口**。判据就看它：
+          //   同一个本地端口 → 只映射出一个外网端口  = endpoint-independent（打洞可行）
+          //   同一个本地端口 → 映射出多个外网端口      = address-dependent（对称 NAT，打洞理论上不成立）
+          //
+          // ⚠️ 绝不能只看"一共有几个外网端口"：Chrome 会绑多个本地 UDP socket，
+          //    每个 socket 天然一个外网端口 —— 那样看的话，好 NAT 也会被误判成对称。
+          const byBase = new Map();
           stats.forEach((r) => {
             if (r.type !== 'local-candidate') return;
             types.add(r.candidateType);
-            if (r.candidateType === 'srflx' && r.address) mapped.push(`${r.address}:${r.port}`);
+            if (r.candidateType !== 'srflx') return;
+            mapped.add(`${r.address}:${r.port}`);
+            const base = r.relatedPort ?? 'unknown';
+            if (!byBase.has(base)) byBase.set(base, new Set());
+            byBase.get(base).add(r.port);
           });
-          return { types: [...types].sort(), mapped: [...new Set(mapped)], gathering: pc.iceGatheringState };
+          const perBase = [...byBase.entries()].map(([base, ports]) => ({ base, ports: [...ports].sort((a, b) => a - b) }));
+          return {
+            types: [...types].sort(),
+            mapped: [...mapped],
+            perBase,
+            // 只有"同一个本底端口出现多个外网端口"才算对称；没有本底信息时不武断下结论
+            symmetric: perBase.length > 0 && perBase.every((x) => x.ports.length > 1),
+            indeterminate: perBase.length === 0,
+            gathering: pc.iceGatheringState,
+          };
         } finally {
           pc.close();
         }
@@ -270,8 +291,17 @@
           $('stunState').innerHTML = hasSrflx
             ? '<span class="badge ok">拿到公网映射</span>'
             : '<span class="badge bad">无应答</span>';
+
+          // 判据是"同一个本地端口映射出几个外网端口"，不是"一共几个外网端口"（见 stunSelfCheck 的注释）
+          $('natBehavior').innerHTML = stun.indeterminate
+            ? '<span class="badge warn">判不出</span>'
+            : stun.symmetric
+              ? '<span class="badge bad">对称 NAT</span>'
+              : '<span class="badge ok">可打洞</span>';
+
           $('myPublic').textContent = stun.mapped.length ? stun.mapped.join(' / ') : '（没有）';
           $('myCands').textContent = stun.types.length ? stun.types.join(', ') : `（未收集到，gathering=${stun.gathering}）`;
+          $('natBehavior').title = stun.perBase.map((x) => `本地端口 ${x.base} → 外网端口 ${x.ports.join(', ')}`).join('\n');
         }
 
         $('peerCount').textContent = String(peers.length);

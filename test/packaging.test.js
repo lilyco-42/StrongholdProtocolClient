@@ -313,9 +313,15 @@ describe('desktop packaging layout', () => {
     assert.deepEqual(desktopTargets({ portable: true }), ['portable']);
   });
 
-  test('electron-builder config agrees: folder target, trimmed locales, payload as resources/www', () => {
+  test('electron-builder config agrees: folder + portable + installer targets, trimmed locales, payload as resources/www', () => {
     const build = JSON.parse(readFileSync(path.join(ROOT, 'desktop', 'package.json'), 'utf8')).build;
-    assert.deepEqual(build.win.target, ['dir']);
+    // dir 是整包目录（zip 分发），portable 与 Setup 是玩家直接双击的单文件 —— build-clients.yml 的「校验产物」
+    // 按 *-portable.exe / *-Setup.exe 后缀找它们，所以下面两个 artifactName 必须和那里成对改。
+    assert.deepEqual(build.win.target, ['dir', 'portable', 'nsis']);
+    assert.equal(build.portable.artifactName, 'StrongholdProtocol-${version}-portable.exe');
+    assert.equal(build.nsis.artifactName, 'StrongholdProtocol-${version}-Setup.exe');
+    // 真 .msi 要 electron-builder 27（MsiTarget 只在 27.0.0-alpha 里），26.x 出不了 —— 升级前别在 CI 里加 msi target。
+    assert.equal(build.msi, undefined, 'msi 尚未启用：需要 electron-builder 27');
     // Electron ships ~48 locales (~48 MB); a Chinese/English game only needs these two.
     assert.deepEqual(build.electronLanguages, ['zh-CN', 'en-US']);
     assert.deepEqual(build.extraResources, [{ from: '../build/client/www', to: 'www' }]);

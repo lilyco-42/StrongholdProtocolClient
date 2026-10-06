@@ -118,22 +118,35 @@ jobs:
             echo "exe 没生成"; ls -R build/desktop | head -40; exit 1; }
           ls -lh build/desktop/win-unpacked/StrongholdProtocol.exe
           du -sh build/desktop/win-unpacked
+          # 单文件版与安装器是同一次 electron-builder 的另外两个 target（win.target 里声明）。少一个就是配置漂了，
+          # 不能只发目录版 —— 玩家要的"一个 exe 双击就跑"和"能卸载的安装包"是两种不同分发形态。
+          # 按后缀匹配而不是拼版本号：名字里的版本来自 desktop/package.json，在这里再拼一次就是第二真源。
+          compgen -G "build/desktop/*-portable.exe" > /dev/null || {
+            echo "portable exe 没生成"; ls -l build/desktop; exit 1; }
+          compgen -G "build/desktop/*-Setup.exe" > /dev/null || {
+            echo "NSIS 安装包没生成"; ls -l build/desktop; exit 1; }
+          ls -lh build/desktop/*.exe
 
       # 壳自己是 29 KB 的 asar，游戏那份 www 是它旁边的 resources/www —— 闸门要落在真正出厂的那份上。
       - name: 零外部依赖（产物内，闸门）
         shell: bash
         run: node tools/check-payload-offline.mjs build/desktop/win-unpacked/resources/www
 
-      - name: 打包分发（7z，比 deflate 小）
+      - name: 打包分发（7z，比 deflate 小）+ 收齐 Windows 三种形态
         shell: pwsh
         run: |
           7z a -mx=9 StrongholdProtocol-desktop.zip build/desktop/win-unpacked
-          Get-Item StrongholdProtocol-desktop.zip | Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,1)}}
+          Copy-Item build/desktop/*-portable.exe,build/desktop/*-Setup.exe .
+          Get-ChildItem StrongholdProtocol-desktop.zip,*-portable.exe,*-Setup.exe |
+            Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,1)}}
 
       - uses: actions/upload-artifact@v4
         with:
           name: stronghold-desktop-win
-          path: StrongholdProtocol-desktop.zip
+          path: |
+            StrongholdProtocol-desktop.zip
+            StrongholdProtocol-*-portable.exe
+            StrongholdProtocol-*-Setup.exe
           retention-days: 7
 
   # ---------- Android APK ----------

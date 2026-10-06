@@ -44,12 +44,23 @@
     ],
     "win": {
       "target": [
-        "dir"
+        "dir",
+        "portable",
+        "nsis"
       ],
       "icon": "icon.ico"
     },
     "portable": {
       "artifactName": "StrongholdProtocol-${version}-portable.exe"
+    },
+    "nsis": {
+      "artifactName": "StrongholdProtocol-${version}-Setup.exe",
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "allowElevation": false,
+      "deleteAppDataOnUninstall": false,
+      "shortcutName": "卫戍协议：盟约"
     }
   }
 }

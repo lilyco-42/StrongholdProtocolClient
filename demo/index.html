@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>P2P 直连自检</title>
+    <style>
+      :root {
+        --bg: #0e1116; --panel: #161b22; --border: #262d38; --text: #e6edf3;
+        --muted: #8b949e; --ok: #3fb950; --warn: #d29922; --danger: #f85149; --g: 8px;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; padding: calc(var(--g) * 2); min-height: 100dvh; background: var(--bg); color: var(--text);
+        font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Noto Sans SC', sans-serif;
+        font-size: 16px; line-height: 1.6;
+      }
+      h1 { font-size: 1.05rem; margin: 0 0 calc(var(--g) * 2); font-weight: 600; }
+      .card { border: 1px solid var(--border); background: var(--panel); border-radius: 12px; padding: calc(var(--g) * 2); margin-bottom: calc(var(--g) * 2); }
+      .verdict { font-size: 1.35rem; font-weight: 700; margin: 0 0 var(--g); line-height: 1.35; }
+      .verdict.ok { color: var(--ok); } .verdict.warn { color: var(--warn); } .verdict.bad { color: var(--danger); }
+      .hint { color: var(--muted); font-size: 0.8125rem; }
+      dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: var(--g); margin: 0; }
+      dt { color: var(--muted); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em; }
+      dd { margin: 0 0 var(--g); font-variant-numeric: tabular-nums; }
+      code { background: #0b0e12; border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; font-size: 0.9em; word-break: break-all; }
+      ul { margin: var(--g) 0 0; padding-left: 18px; } li { font-size: 0.8125rem; }
+
+      label { display: block; color: var(--muted); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: var(--g); }
+      .code-input {
+        width: 100%; padding: 14px 16px; font-size: 2rem; font-weight: 700; letter-spacing: 0.35em; text-align: center;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase;
+        background: #0b0e12; color: var(--text); border: 1px solid var(--border); border-radius: 10px;
+      }
+      .code-input:focus-visible { outline: 2px solid var(--ok); outline-offset: 2px; border-color: var(--ok); }
+      .row { display: flex; flex-wrap: wrap; gap: var(--g); margin-top: calc(var(--g) * 2); }
+      button {
+        flex: 1 1 auto; min-height: 48px; padding: 12px 20px; font-size: 0.9375rem; font-weight: 600;
+        border-radius: 10px; border: 1px solid var(--border); background: #1f2630; color: var(--text); cursor: pointer;
+      }
+      button.primary { background: var(--ok); border-color: var(--ok); color: #04120a; }
+      button:focus-visible { outline: 2px solid var(--ok); outline-offset: 2px; }
+      button:disabled { opacity: 0.5; cursor: not-allowed; }
+      .code-big {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 2.2rem; font-weight: 700;
+        letter-spacing: 0.3em; color: var(--ok); margin: var(--g) 0;
+      }
+      @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+    </style>
+  </head>
+  <body>
+    <h1>P2P 直连自检 —— 不经过任何服务器</h1>
+
+    <!-- 入房前：6 位字母房间码 -->
+    <section id="joinCard" class="card">
+      <div id="joinVerdict" class="verdict warn">输入或生成一个 6 位房间码</div>
+      <div id="joinHint" class="hint">
+        两端输入<b>同一个</b>房间码才会相遇。要测真实穿透，请让两台设备处在<b>不同网络</b>：
+        一端家宽/WiFi，另一端走手机<b>蜂窝数据（关掉 WiFi）</b>。
+      </div>
+
+      <div style="margin-top: calc(var(--g) * 2)">
+        <label for="code">房间码（6 位字母）</label>
+        <input id="code" class="code-input" inputmode="latin" autocomplete="off" autocapitalize="characters"
+               spellcheck="false" maxlength="6" placeholder="ABCDEF" />
+      </div>
+
+      <div class="row">
+        <button id="gen" type="button">随机生成</button>
+        <button id="go" class="primary" type="button">进入房间</button>
+      </div>
+    </section>
+
+    <!-- 入房后 -->
+    <section id="liveCard" class="card" hidden>
+      <div id="verdict" class="verdict warn">等待对端…</div>
+      <div id="explain" class="hint"></div>
+      <div class="code-big" id="codeBig">------</div>
+      <div class="hint">把这个房间码给对方，让他在自己设备上输入同一个码。</div>
+    </section>
+
+    <section id="iceCard" class="card" hidden>
+      <h2 style="font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0 0 var(--g)">链路自检</h2>
+      <dl>
+        <div><dt>本端候选</dt><dd id="localType">—</dd></div>
+        <div><dt>对端候选</dt><dd id="remoteType">—</dd></div>
+        <div><dt>协议</dt><dd id="proto">—</dd></div>
+        <div><dt>RTT</dt><dd id="rtt">—</dd></div>
+      </dl>
+      <div class="hint" id="iceHint"></div>
+    </section>
+
+    <section id="roomsCard" class="card" hidden>
+      <h2 style="font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0 0 var(--g)">房间列表</h2>
+      <ul id="rooms"></ul>
+      <div class="hint">这一步走公共中继撮合，与你的业务数据无关；连上之后数据只走两端直连。</div>
+    </section>
+
+    <script>
+      // Hook RTCPeerConnection before any module runs — module scripts are deferred, so a classic script here
+      // is the only place early enough to catch the connection the lobby creates on import.
+      (() => {
+        const Orig = window.RTCPeerConnection;
+        window.__pcs = [];
+        window.RTCPeerConnection = class extends Orig {
+          constructor(...args) { super(...args); window.__pcs.push(this); }
+        };
+      })();
+    </script>
+
+    <script type="module">
+      // 6 letters, no digits. I and O are dropped: on a phone keyboard they read as 1 and 0, and a room code
+      // that two people transcribe differently is a support ticket, not a test.
+      const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+      const CODE_LEN = 6;
+      const CODE_RE = new RegExp(`^[${ALPHABET}]{${CODE_LEN}}$`);
+
+      const APP_ID = 'p2p-connect-check-v1';
+      const $ = (id) => document.getElementById(id);
+
+      const randomCode = () =>
+        Array.from({ length: CODE_LEN }, () => ALPHABET[Math.floor(Math.random() * ALPHABET.length)]).join('');
+
+      const clean = (raw) =>
+        String(raw ?? '').toUpperCase().replace(/[^A-Z]/g, '').slice(0, CODE_LEN);
+
+      $('code').addEventListener('input', (e) => {
+        const atEnd = e.target.selectionStart === e.target.value.length;
+        e.target.value = clean(e.target.value);
+        if (atEnd) e.target.setSelectionRange(e.target.value.length, e.target.value.length);
+      });
+
+      $('gen').addEventListener('click', () => {
+        $('code').value = randomCode();
+        $('code').focus();
+      });
+
+      // Pre-fill from ?code=XXXXXX so a shared link needs no typing.
+      const preset = clean(new URLSearchParams(location.search).get('code'));
+      if (preset) $('code').value = preset;
+      if (preset.length === CODE_LEN) setTimeout(() => $('go').click(), 50);
+
+      $('code').addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && CODE_RE.test($('code').value)) $('go').click();
+      });
+
+      // What the candidate type actually means. Spelling it out in the page is the point: whoever runs this on the
+      // far side reads the verdict themselves, instead of trusting someone else's reading of getStats().
+      const MEANING = {
+        host: ['bad', '本机/局域网直连 —— NAT 没有参与，这次不算数',
+          '两端在同一台机器或同一个局域网里。要测真实穿透，必须让一端走蜂窝数据。'],
+        srflx: ['ok', '打洞成功 —— 真的穿过了 NAT', '两端在不同网络，用 STUN 学到公网映射后直连。这条路不经过任何中继。'],
+        prflx: ['ok', '打洞成功（对端反射候选）—— 真的穿过了 NAT', '与 srflx 同类，路径同样是直连。'],
+        relay: ['warn', '打洞失败，走了中继（TURN）', '这正是 RFC 4787 的边界：一侧是运营商 CGNAT / 对称 NAT。数据仍可用，但走中继、延迟更高。'],
+      };
+
+      let lobby = null;
+      let state = null;
+
+      const readIce = async () => {
+        for (const pc of window.__pcs ?? []) {
+          const stats = await pc.getStats();
+          const byId = new Map();
+          stats.forEach((r) => byId.set(r.id, r));
+          let pair = null;
+          stats.forEach((r) => {
+            if (r.type !== 'candidate-pair') return;
+            if (r.state === 'succeeded' || r.nominated) { if (!pair || r.nominated) pair = r; }
+          });
+          if (!pair) continue;
+          const local = byId.get(pair.localCandidateId);
+          const remote = byId.get(pair.remoteCandidateId);
+          return {
+            localType: local?.candidateType ?? '?',
+            remoteType: remote?.candidateType ?? '?',
+            protocol: local?.protocol ?? '?',
+            rtt: pair.currentRoundTripTime,
+          };
+        }
+        return null;
+      };
+
+      const render = async () => {
+        if (!state) return;
+        const peers = state.peerIds ?? [];
+        $('codeBig').textContent = state.roomId ?? '';
+        $('rooms').innerHTML = (state.rooms ?? []).length
+          ? state.rooms.map((r) => `<li>${r.name} — <code>${r.address}</code></li>`).join('')
+          : '<li style="color:var(--muted)">还没有人公开地址。</li>';
+
+        if (!peers.length) {
+          $('verdict').className = 'verdict warn';
+          $('verdict').textContent = '等待对端…';
+          $('explain').textContent = '让对方在他自己的设备上输入同一个房间码。两端要在【不同网络】才会走真实穿透。';
+          $('iceCard').hidden = true;
+          return;
+        }
+
+        $('iceCard').hidden = false;
+        const ice = await readIce();
+        if (!ice) {
+          $('verdict').className = 'verdict warn';
+          $('verdict').textContent = '已连上，ICE 结果还没收敛…';
+          $('explain').textContent = '';
+          return;
+        }
+        $('localType').textContent = ice.localType;
+        $('remoteType').textContent = ice.remoteType;
+        $('proto').textContent = ice.protocol;
+        $('rtt').textContent = ice.rtt != null ? `${(ice.rtt * 1000).toFixed(1)} ms` : '—';
+
+        const [kind, text, explain] = MEANING[ice.localType] ?? ['warn', `未知候选类型 ${ice.localType}`, ''];
+        $('verdict').className = `verdict ${kind}`;
+        $('verdict').textContent = text;
+        $('explain').textContent = explain;
+        $('iceHint').textContent = ice.localType === 'host'
+          ? '注意：即使显示"已连接"，只要候选是 host，两端就还在同一网络里。'
+          : '';
+      };
+
+      $('go').addEventListener('click', async () => {
+        const code = clean($('code').value);
+        if (!CODE_RE.test(code)) {
+          $('joinVerdict').textContent = `房间码要正好 ${CODE_LEN} 位字母（当前 ${code.length} 位）`;
+          $('code').focus();
+          return;
+        }
+        $('go').disabled = true;
+        $('gen').disabled = true;
+        $('joinVerdict').textContent = `正在进入 ${code} …`;
+
+        try {
+          const { openLobby } = await import('./p2p/link.js');
+          lobby = await openLobby({ appId: APP_ID, roomId: code });
+          state = lobby.state();
+          lobby.subscribe((s) => { state = s; render(); });
+          lobby.publish({ name: code, address: '' });
+
+          $('joinCard').hidden = true;
+          $('liveCard').hidden = false;
+          $('roomsCard').hidden = false;
+          render();
+          setInterval(render, 1000); // keep the ICE readout live; the selected pair can settle late
+
+          globalThis.__p2p = { lobby, state: () => state, ice: readIce, code };
+        } catch (error) {
+          $('joinVerdict').textContent = `启动失败：${String((error && error.message) || error)}`;
+          $('go').disabled = false;
+          $('gen').disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>

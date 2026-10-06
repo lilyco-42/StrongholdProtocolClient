@@ -62,6 +62,7 @@ export async function openLobby({ appId = LOBBY_APP_ID, roomId = LOBBY_ROOM, tur
 
   const state = () => ({
     selfId,
+    roomId,
     peerIds: peerIds(),
     rooms: mergeAdverts([self, ...heard.values()].filter(Boolean)),
     lastError,

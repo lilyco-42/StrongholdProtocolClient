@@ -1,0 +1,156 @@
+name: p2p-demo
+
+# 只构建「P2P 直连自检」demo 的安装包：Windows 便携版 .exe + Android debug .apk。
+#
+# 为什么不塞进 build-clients.yml：那个 workflow 围绕**游戏 payload**（353 MB 素材、下载解压、game-client 补丁、
+# 五道闸门）。demo 站点只有 116 KB、没有素材、没有补丁，共用就得给那些闸门加分支判断 ——
+# 而"两个 job 逐字一致"正是那五道闸门能被信任的原因（见 build-clients.yml §ios 的注释）。
+# 拆开更省事，也更安全：这条 workflow 挂了不影响出货线。
+#
+# 交付物用途：把 demo 装到**两台不同网络的设备**上（一端家宽、一端手机蜂窝数据），
+# 页面会自己报出 ICE 选中的候选类型 —— host = 没穿 NAT（不算数）/ srflx = 真打洞 / relay = 需要中继。
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'p2p-demo-*'
+
+env:
+  NODE_VERSION: '22'
+
+jobs:
+  # ---------- Windows 便携版 ----------
+  desktop:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: 组装 demo 站点（含闸门）
+        shell: bash
+        run: node tools/package-demo.mjs
+
+      - name: 装 Electron 依赖
+        run: cd desktop && npm install
+
+      # 复用 desktop/ 这个 Electron 壳**一行都不改**：它的 extraResources 指向 ../build/client/www，
+      # 而 demo 正好铺在那里。只覆盖身份，让 demo 和游戏本体是两个不同的程序。
+      #
+      # 分两次打：目录版先出，闸门落在它的 resources/www 上（壳是 asar，页面在旁边，只有目录版看得见）；
+      # 便携版是给你下载用的单文件。第二次复用已下载的 Electron，只多一次重打包。
+      - name: 打 Windows 目录版（供闸门）
+        shell: bash
+        run: |
+          cd desktop
+          npx electron-builder --win --x64 \
+            -c.productName=P2P-Connect-Check \
+            -c.appId=site.lain42.p2pcheck
+
+      # 闸门落在**真正出厂的字节**上。少了页面，壳会打开一个空窗口，而"打包成功"照样是绿的。
+      - name: 校验产物（闸门）
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXE=build/desktop/win-unpacked/P2P-Connect-Check.exe
+          test -f "$EXE" || { echo "exe 没生成"; ls -R build/desktop | head -40; exit 1; }
+          ls -lh "$EXE"
+          du -sh build/desktop/win-unpacked
+          node tools/package-demo.mjs --check build/desktop/win-unpacked/resources/www
+
+      - name: 打 Windows 便携版（单文件）
+        shell: bash
+        run: |
+          cd desktop
+          npx electron-builder --win portable --x64 \
+            -c.productName=P2P-Connect-Check \
+            -c.appId=site.lain42.p2pcheck \
+            -c.portable.artifactName=P2P-Connect-Check-portable.exe
+          test -f ../build/desktop/P2P-Connect-Check-portable.exe || { echo "便携版没生成"; ls -lh ../build/desktop; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: p2p-demo-desktop-exe
+          path: build/desktop/P2P-Connect-Check-portable.exe
+          retention-days: 30
+
+  # ---------- Android debug APK ----------
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # 与 build-clients.yml 同一套做法（不用 android-actions/setup-android@v3：它会去装早已下架的 legacy `tools` 包）。
+      - name: 安装 Android SDK 组件
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          echo "SDK=$SDK"
+          test -d "$SDK" || { echo "找不到 Android SDK"; exit 1; }
+          SDKMANAGER=$(find "$SDK/cmdline-tools" -maxdepth 3 -name sdkmanager -type f | sort | tail -1)
+          test -n "$SDKMANAGER" || { echo "找不到 sdkmanager"; exit 1; }
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "$(dirname "$SDKMANAGER")" >> "$GITHUB_PATH"
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          "$SDKMANAGER" --install "platforms;android-36" "build-tools;36.0.0" "platform-tools"
+
+      - name: 组装 demo 站点（含闸门）
+        run: node tools/package-demo.mjs
+
+      # 只改 applicationId 与显示名：applicationId 是安装身份，不改的话装 demo 会顶掉玩家已经装好的游戏本体。
+      # namespace 不动 —— 它与 MainActivity.java 的 package 绑定，动了就得连源码目录一起搬。
+      # webDir 也不用动：capacitor.config.json 本来就指向 ../build/client/www，demo 正好铺在那里。
+      - name: 改成 demo 的安装身份
+        run: |
+          set -euo pipefail
+          G=mobile/android/app/build.gradle
+          sed -i 's|applicationId "site.starst.stronghold"|applicationId "site.lain42.p2pcheck"|' "$G"
+          grep -q 'applicationId "site.lain42.p2pcheck"' "$G" || { echo "applicationId 没改成功"; exit 1; }
+          S=mobile/android/app/src/main/res/values/strings.xml
+          sed -i 's|<string name="app_name">卫戍协议</string>|<string name="app_name">P2P直连自检</string>|' "$S"
+          grep -q 'P2P直连自检' "$S" || { echo "app_name 没改成功"; exit 1; }
+
+      - name: 装 Capacitor 依赖
+        run: cd mobile && npm install
+
+      - name: 同步 web 资源到 Android 工程
+        run: cd mobile && npx cap sync android
+
+      - name: 打 APK
+        run: |
+          cd mobile/android
+          chmod +x ./gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
+
+      # APK 是把 www 压进 assets/public/ 的 zip：整包 grep 是 0 命中，必须按条目解开来查。
+      - name: 校验 APK（闸门）
+        run: |
+          set -euo pipefail
+          APK=mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          test -f "$APK" || { echo "APK 没生成"; find mobile/android/app/build -name '*.apk' 2>/dev/null; exit 1; }
+          ls -lh "$APK"
+          unzip -l "$APK" | grep -E 'assets/public/(index\.html|p2p/vendor/trystero\.js)' || { echo "APK 里没有 demo 页面"; exit 1; }
+          rm -rf /tmp/apk-x && mkdir -p /tmp/apk-x
+          unzip -q -o "$APK" 'assets/public/*' -d /tmp/apk-x
+          node tools/package-demo.mjs --check /tmp/apk-x/assets/public
+          # 安装身份也必须是 demo 的，否则装上去会顶掉游戏本体
+          AAPT=$(find "${ANDROID_HOME}" -name aapt2 -type f | sort | tail -1)
+          "$AAPT" dump badging "$APK" | grep -q "package: name='site.lain42.p2pcheck'" || { echo "APK 的包名不是 demo 的"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: p2p-demo-android-apk
+          path: mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30

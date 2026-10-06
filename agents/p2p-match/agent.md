@@ -61,11 +61,27 @@ SP_GAME_ROOT=D:/Code/Stronghold-Protocol-upstream npm test → tests 113 / pass 
 
 ## 4. 里程碑（由简入繁，每个都能独立验收）
 
-**M1 —— 只做「匹配」，不做「传输」（推荐第一步）**
+**M1 —— 只做「匹配」，不做「传输」（推荐第一步）** — **✅ 已实现并端到端验证（2026-10-06）**
 用去中心化信令替代**选服务器**这一步：玩家开一个 P2P 房间，房间列表里出现彼此和各自的自建服地址。
 数据仍走某个玩家的 `wss://`（可用 nat-lab 的洞或 EasyTier 打通）。
 - 全部代码在**本仓库的壳里**，`patches/game-client.patch` 不用动
 - A1/A2/A3/A4 四项验收都能达成
+
+实测证据（全部本机复跑过，不是引用文档）：
+
+```
+test/p2p-rooms.test.js                        14 项全过（纯函数 + vendor 离线闸门）
+两个真实 Chrome 页面，无任何服务器配置：
+  T1 互相发现            甲 2 行 / 乙 2 行
+  T2 对端地址+归一化      wss://b.example/play/ws → wss://b.example/ws
+  T3 WebRTC 对端已连接    peers=1/1，selfId 互异
+  T4 无 onJoinError       两页均无
+  T5 恰好两行（去重）     甲 2 / 乙 2
+npm test：不带 checkout 95→109、带 checkout 112→126，两种模式都恰好 +14，零回归
+vendor 的 trystero 0.26.0 过闸门 13 条 OUTBOUND 正则 0 命中（sha256 a7ca3dfd…）
+```
+
+⚠️ 尚未接进 `shell/picker.js` 的 UI —— 目前是**可用的模块**，不是**玩家能点的按钮**。那是 M1 的收尾。
 
 **M2 —— 房间发现自动化**
 M1 之上加「自由匹配」：不是选房间，而是按人数/延迟自动配对。

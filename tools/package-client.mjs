@@ -214,11 +214,16 @@ globalThis.__SP_SERVER__ = ${JSON.stringify(server)};
 }
 
 /** Payload paths of the shell sources: the picker (loaded by the patched index.html before main.js) and the
- * display tweaks (linked as a stylesheet after the game's own CSS). */
+ * display tweaks (linked as a stylesheet after the game's own CSS). The p2p/ trio is the decentralized lobby — the
+ * picker pulls it in with a dynamic import(), so it must be in the payload but is deliberately not a <script> tag:
+ * nothing of it runs (or is even parsed) unless a lobby is actually opened. */
 export const SHELL_FILES = [
   ['picker.js', 'js/shell/picker.js'],
   ['picker-core.js', 'js/shell/picker-core.js'],
   ['display.css', 'css/shell-display.css'],
+  ['p2p/rooms.js', 'js/shell/p2p/rooms.js'],
+  ['p2p/link.js', 'js/shell/p2p/link.js'],
+  ['p2p/vendor/trystero.js', 'js/shell/p2p/vendor/trystero.js'],
 ];
 
 /** Body of a payload shell file — shell/<name>, copied verbatim. */

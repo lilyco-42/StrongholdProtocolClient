@@ -19,19 +19,19 @@ npm test                    # 打包流程的单元/契约测试（无游戏 che
 
 ## 玩家上手（不用会编译，只要装和玩）
 
-东西在 GitHub 的 **Releases** 里（仓库页 → Releases → 最新的 `v0.1.4-c20`），五个形态，下自己那台设备要用的那个：
+东西在 GitHub 的 **Releases** 里（仓库页 → Releases → 最新的 `v0.2.0-c21`），五个形态，下自己那台设备要用的那个：
 
 | 你要玩的设备 | 下载 | 大小 | 怎么装 |
 |---|---|---|---|
-| Windows 10/11（64 位）· 推荐 | `StrongholdProtocol-desktop-win-0.1.4-c20.zip` | 609,449,037 B（约 581 MiB） | 解压，**整个文件夹一起放着**，双击里面的 `StrongholdProtocol.exe` |
-| Windows · 单文件 | `StrongholdProtocol-0.1.4-portable.exe` | 520,808,972 B（约 497 MiB） | 双击即可，但**每次启动都要解压 632 MB**，首屏慢十几秒 |
-| Windows · 安装器 | `StrongholdProtocol-0.1.4-Setup.exe` | 521,019,052 B（约 497 MiB） | 装到开始菜单，之后与目录版是同一个东西 |
-| 安卓手机（Android 7.0 及以上） | `Stronghold-0.1.4-c20-android-debug.apk` | 498,622,939 B（约 475 MiB） | 传到手机 → 点开除 → 允许"未知来源/安装未知应用" |
-| iPhone（iOS 15 及以上） | `Stronghold-0.1.4-c20-ios-unsigned.ipa` | 474,088,429 B（约 452 MiB） | **未签名**，要用你自己的 Apple ID 现签，见下一节 |
+| Windows 10/11（64 位）· 推荐 | `StrongholdProtocol-desktop-win-0.2.0-c21.zip` | 738,214,626 B（约 704 MiB） | 解压，**整个文件夹一起放着**，双击里面的 `StrongholdProtocol.exe` |
+| Windows · 单文件 | `StrongholdProtocol-0.2.0-portable.exe` | 637,719,678 B（约 608 MiB） | 双击即可，但**每次启动都要解压 865 MB**，首屏慢十几秒 |
+| Windows · 安装器 | `StrongholdProtocol-0.2.0-Setup.exe` | 637,929,840 B（约 608 MiB） | 装到开始菜单，之后与目录版是同一个东西 |
+| 安卓手机（Android 7.0 及以上） | `Stronghold-0.2.0-c21-android-debug.apk` | 639,375,426 B（约 610 MiB） | 传到手机 → 点开除 → 允许"未知来源/安装未知应用" |
+| iPhone（iOS 15 及以上） | `Stronghold-0.2.0-c21-ios-unsigned.ipa` | 604,405,206 B（约 576 MiB） | **未签名**，要用你自己的 Apple ID 现签，见下一节 |
 
-包里有 **608.4 MB 素材**（`assets/` 10,075 个文件：美术 / 骨骼 / 174 款时装 / 中英两语配音），整个客户端 632.4 MB / 10,398 个文件，
+包里有 **826.5 MB 素材**（`assets/` 13,342 个文件：美术 / 骨骼 / 174 款时装 / 中日两语配音各 2,674 条），整个客户端 865.3 MB / 13,966 个文件，
 所以**进对局不需要再从网上下任何东西**；代价就是每个安装包都大。三种桌面形态与两种移动形态里那份素材是**同一份**
-（发布前后逐个文件对过路径与字节数，10,398 个一一对齐）。
+（发布前后逐个文件对过路径与字节数，13,966 个一一对齐）。
 
 国内下载慢可以试 OSS 镜像（同一批字节，文件名一致）——**但它现在不通**，见下面那条说明：
 
@@ -46,8 +46,8 @@ https://dl.lain42.top/downloads/stronghold-protocol/0.1.3-c11/Stronghold-0.1.3-c
 不确定下到的文件是不是完好的，对一下指纹（GitHub 每个资产的 `digest` 就是 sha256）：
 
 ```
-sha256sum Stronghold-0.1.4-c20-android-debug.apk
-gh api repos/lilyco-42/StrongholdProtocolClient/releases/tags/v0.1.4-c20 --jq '.assets[]|[.name,.digest]|@tsv'
+sha256sum Stronghold-0.2.0-c21-android-debug.apk
+gh api repos/lilyco-42/StrongholdProtocolClient/releases/tags/v0.2.0-c21 --jq '.assets[]|[.name,.digest]|@tsv'
 ```
 两个 sha256 必须**逐字节相等**才算下载完好（不相等多半是没下全，重下即可）。
 
@@ -70,15 +70,15 @@ gh api repos/lilyco-42/StrongholdProtocolClient/releases/tags/v0.1.4-c20 --jq '.
 | 最低系统 | **iOS 15 及以上**（Capacitor 8.5.2 的 SPM 声明 `.iOS(.v15)`，不是随手写的数字） |
 | 有效期 | 免费 Apple ID 签出来的包 **7 天过期**，到期要连电脑重签一次 |
 | 数量限制 | 同一个免费 Apple ID 最多 **3 个**自签应用（其中还要占一个给签名工具本身） |
-| 体积 | 约 452 MiB（c20 实测 474,088,429 B；美术音频全在包里，进对局不下载），建议 WiFi 下装，手机留出 1.5 GB 空闲 |
+| 体积 | 约 576 MiB（c21 实测 604,405,206 B；美术音频全在包里，进对局不下载），建议 WiFi 下装，手机留出 2 GB 空闲（www 解出来本身就有 865 MB） |
 | 声音 | 首次点一下屏幕才有 BGM —— iOS 要求音频必须由用户手势解锁，游戏里已做（`audio.js` 的 `pointerdown/touchend/click/keydown`） |
 | 方向 | 锁横屏（`Info.plist` 只声明 LandscapeLeft/Right）；刘海区已按 `viewport-fit=cover` + safe-area 处理 |
 | 连自建服 | 已放开 ATS，所以 `ws://192.168.1.9:3000` 这种明文地址能连（对应安卓的 `allowMixedContent`） |
 
-下载（和 exe/apk 在同一个 Release 页 `v0.1.4-c20`）：
+下载（和 exe/apk 在同一个 Release 页 `v0.2.0-c21`）：
 
 ```
-https://github.com/lilyco-42/StrongholdProtocolClient/releases/download/v0.1.4-c20/Stronghold-0.1.4-c20-ios-unsigned.ipa
+https://github.com/lilyco-42/StrongholdProtocolClient/releases/download/v0.2.0-c21/Stronghold-0.2.0-c21-ios-unsigned.ipa
 ```
 
 装到手机的步骤（玩家自己做，我们不提供证书也不代签）：

@@ -10,7 +10,7 @@ npm run client:build        # 只生成 build/client/www（想用自己的静态
 
 ## 1. 原理
 
-浏览器客户端是按服务器的挂载布局写的（游戏仓库的 `server/index.js`）：`/`→`public/`、`/data/`→`data/`、`/shared/`→`shared/`、`/sim/`→`server/sim/**/*.js`，外加服务器现生成的 `/data.js`（`server/data.js` 的浏览器替身）。打包好的客户端没有 Node 服务器，所以：
+浏览器客户端是按服务器的挂载布局写的（游戏仓库的 `server/index.js`）：`/`→`public/`、`/data/`→`data/`、`/shared/`→`shared/`、`/sim/`→`server/sim/**/*.js`，0.2.0 起再加一条可选的 `/packs/`→`packs/`（`server/http/static.js`：`/packs/index.json` 是这台服务器的内容包登记，口语包（界面译文 + 游戏文本）由它列出来，实际文件在 `public/i18n/` 与 `data/`；`/packs/<id>/<file>` 只放登记点名的文件），外加服务器现生成的 `/data.js`（`server/data.js` 的浏览器替身）。打包好的客户端没有 Node 服务器，所以：
 
 1. `tools/package-client.mjs` 把**游戏仓库 checkout** 的这些挂载点**摊平**成一个目录 `build/client/www/`——任何静态文件服务器或 Android WebView 都能直接托管，`/js/...`、`/data/...`、`/sim/...` 这些绝对路径照常解析；顺带生成 `data.js`（垫片）、`js/runtime-config.js`（服务器地址）、`js/shell/*`（选择服务器页）与 `build.json`（构建来源）。
 2. 客户端要连远程服务器，需要几处源码级改动：`js/net.js` 的 `defaultWsUrl()` 读 `globalThis.__SP_SERVER__`、`js/screens/room.js` 的邀请链接指向远程网页版、`index.html` 在模块图之前载入 `/js/runtime-config.js` 与 `/js/shell/picker.js`。**这些改动不在游戏仓库里**，而是以 `patches/game-client.patch` 的形式打在 payload 副本上（见 §7），游戏仓库保持与上游逐字节一致。
@@ -301,7 +301,7 @@ node scripts/notice.mjs --clear        # 撤回
 
 | | 打包进去什么 |
 |---|---|
-| 打包 | `public/**`（含 `assets`、`fonts`、`vendor`、`webfonts`）、`data/**`、`shared/**`、`server/sim/**/*.js`（去掉 Node 专用的 `nodeData.js`）、生成的 `data.js` / `build.json` / `js/runtime-config.js` / `js/shell/picker.js` / `js/shell/picker-core.js`、`local-assets.json`（没做本地提取时给空清单）、打补丁后的 `index.html` / `js/net.js` / `js/screens/room.js` |
+| 打包 | `public/**`（含 `assets`、`fonts`、`vendor`、`webfonts`）、`data/**`、`shared/**`、`server/sim/**/*.js`（去掉 Node 专用的 `nodeData.js`）、`packs/**` 与切包时由游戏仓自己的 `tools/packs.mjs index` 生成的 `packs/index.json`（0.2.0 的语言菜单读它；问的是 **checkout** 不是摊平后的 `www/`，因为 `public/` 已经并进根）、生成的 `data.js` / `build.json` / `js/runtime-config.js` / `js/shell/picker.js` / `js/shell/picker-core.js`、`local-assets.json`（没做本地提取时给空清单）、打补丁后的 `index.html` / `js/net.js` / `js/screens/room.js` |
 | 不打包 | 游戏仓库的 `server/` 其余部分（HTTP / WS / 大厅 / 对局引擎）、`docs/`、`test/`、`.cache/`、`.tools/`、`node_modules/` |
 
 `tools/package-client.mjs` 是**增量**的：文件大小与修改时间没变就跳过，源文件删掉后产物里的对应文件也会被删——重建很快（第二次通常 0 个文件被写入）。

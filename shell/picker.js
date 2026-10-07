@@ -26,7 +26,7 @@ import { toHttpUrl, toWsUrl } from '../net.js';
 import {
   BUILTIN_SERVERS, COMMUNITY_SERVERS, K_AUTOSTART, K_CHOSEN, K_LIST, K_SEED, K_SERVER, NAME_MAX, SEED_VERSION,
   addressError, ambiguousScheme, autostartOn, cleanName, customFrom, isAndroidUA, missingSeeds, orderCandidates,
-  pathOf, probeReason, serverName, shouldShowPicker,
+  pathOf, probeReason, rootWsUrl, serverName, shouldShowPicker,
 } from './picker-core.js';
 
 const PROBE_TIMEOUT_MS = 4000;
@@ -69,6 +69,23 @@ function buildDefault() {
 
 /** Normalised socket URL of an address ('' → null). toWsUrl normalises rather than validates; addressError does that. */
 const keyOf = (address) => (typeof address === 'string' && address.trim() ? toWsUrl(address) : null);
+
+/**
+ * The socket URL the game boots with — a pasted path is dropped unless it already *is* the socket.
+ *
+ * `public/js/net.js` takes exactly one URL and never retries, and the game server rejects every other path:
+ * `server/index.js` answers the upgrade only for `rawPath === '/ws'` and `reject(404, 'Not Found')` otherwise.
+ * Measured 2026-10-07 on all ten seeded servers: root `/ws` → 101 on 10/10, while the three seeded addresses that
+ * carry a path (`https://game.misyra.com/play`, `https://game.rainya.me/play`, `https://sp.rainya.me:10166/play`)
+ * return **404** at `<path>/ws`. The picker probes both mounts, so its row can read 可连接 while the game —
+ * handed the typed address after a failed or skipped probe — shows the player a bare "Not Found".
+ */
+export const bootUrlOf = (address) => {
+  const s = typeof address === 'string' ? address.trim() : '';
+  if (!s) return '';
+  const ws = toWsUrl(s);
+  return ws ? rootWsUrl(ws) : s;
+};
 
 /** Escape interpolated text: /healthz comes from a remote server, so its fields are never trusted as markup. */
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -440,7 +457,7 @@ function mount() {
     if (!entry?.address) return;
     // Prefer the URL that actually answered the probe: a typed `host:port` may only be reachable on one scheme.
     const st = entry.key ? states.get(entry.key) : null;
-    let address = (st?.ok && st.url) ? st.url : entry.address;
+    let address = (st?.ok && st.url) ? st.url : bootUrlOf(entry.address);
     if (!st) {
       // Direct connect: nothing has probed this address yet, so find the socket URL that works before going in.
       setHint(`正在连接 ${toHttpUrl(entry.address)} …`);
@@ -600,12 +617,15 @@ globalThis.__SP_SHELL_PICKER__ = {
   visible: pickerVisible,
   servers: serverList,
   candidates: candidateWsUrls,
+  bootUrlOf,
   probe,
 };
 
 // ---- launch decision --------------------------------------------------------------------------------------------
 const savedAddress = readItem(K_SERVER, 'localStorage');
-if (savedAddress) globalThis.__SP_SERVER__ = savedAddress;
+// 老版本可能把带路径的地址（`https://host/play`）原样存过 —— 那是玩家看到 "Not Found" 的另一条来路，
+// 所以进游戏前统一成根挂载的 socket URL。
+if (savedAddress) globalThis.__SP_SERVER__ = bootUrlOf(savedAddress) || savedAddress;
 /** The server the game is booting with: public/js/net.js reads __SP_SERVER__ when it opens the socket. */
 const bootTarget = keyOf(globalThis.__SP_SERVER__);
 

@@ -145,6 +145,22 @@ describe('the server probe', { skip: GAME_ROOT ? false : 'no Stronghold-Protocol
     ], 'a scheme-less host:port keeps its two-scheme guess');
   });
 
+  test('进入时交给游戏的地址永远挂在根 /ws —— 带路径就是玩家看到的 "Not Found"', () => {
+    // 实测 2026-10-07：十台网友服全部在根路径回 101，而三台带路径的种子地址在 `<path>/ws` 回 404
+    // （`server/index.js` 只对 rawPath === '/ws' 放行，其余 reject(404, 'Not Found')）。
+    // 探针会两个挂载都试，所以列表里那行可以显示「可连接」，而游戏只拿一个 URL —— 探针失败或沿用老
+    // localStorage 时，带路径的地址就直接进了 net.js，玩家那边就是一个光秃秃的 Not Found。
+    assert.equal(picker.bootUrlOf('https://game.misyra.com/play'), 'wss://game.misyra.com/ws');
+    assert.equal(picker.bootUrlOf('https://sp.rainya.me:10166/play'), 'wss://sp.rainya.me:10166/ws', '端口要留着');
+    assert.equal(picker.bootUrlOf('wss://host/ws'), 'wss://host/ws', '本来就是根挂载的不再动它');
+    assert.equal(picker.bootUrlOf('http://183.66.27.19:20522/'), 'ws://183.66.27.19:20522/ws', '去路径不能改判出来的协议');
+    assert.equal(picker.bootUrlOf('  '), '');
+    for (const e of COMMUNITY_SERVERS) {
+      assert.match(picker.bootUrlOf(e.address), /^wss?:\/\/[^/]+\/ws$/,
+        `播种地址 ${e.address} 归一化后不是根挂载`);
+    }
+  });
+
   test('it enters the server that answers, even when that is not the one typed', async () => {
     const { tried } = scriptWorld({ open: ['wss://host.example/ws'] });
     const r = await picker.probe('https://host.example/play', TIMEOUT);

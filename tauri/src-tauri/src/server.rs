@@ -282,9 +282,9 @@ fn http_date(d: SystemTime) -> String {
         m += 1;
     }
     format!(
-        "{dow}, {:02} {:02} {} {:02}:{:02}:{:02} GMT",
+        "{dow}, {:02} {} {} {:02}:{:02}:{:02} GMT",
         d + 1,
-        m + 1,
+        MONS[m],
         y,
         tod / 3600,
         (tod % 3600) / 60,

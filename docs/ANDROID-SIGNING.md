@@ -21,6 +21,21 @@ localStorage 里，见 `docs/PACKAGING.md` 关于固定 `DEFAULT_PORT` 的那段
 
 所以这不是" nicer to have"，是一个每发一版就重复一次的玩家侧数据损失。
 
+实测坐实（用 `node tools/check-apk-signature.mjs` 读五份**已发布**的包，都是 `CN=Android Debug`，
+指纹两两不同 —— 也就是每一次发版都换了一把钥匙）：
+
+| Release 资产（永久 URL，字节数与本表一致） | 签名证书 SHA-256 |
+|---|---|
+| `Stronghold-0.1.4-c14-android-debug.apk` (343,864,512 B) | `a9b5b81f90460ea8fd09d6c2b740d18ac4f6d4ade0f30f9bdf4eb05a274806e2` |
+| `Stronghold-0.1.4-c17-android-debug.apk` (352,235,688 B) | `1efb4b959198b153c24171764301d385a9a754539fde833114b6f899f75d029d` |
+| `Stronghold-0.1.4-c20-android-debug.apk` (498,622,939 B) | `1a41523195c137883748c6505d71e6a4dc1336a23fd4398ccdc4d67bc60d664d` |
+| `Stronghold-0.2.0-c21-android-debug.apk` (639,375,426 B) | `38cacdd8e07aaa94dcf08d83443ab4c79f932a617db152f9a50cd1246b0d842f` |
+| `Stronghold-0.2.1-c22-android-debug.apk` (639,415,274 B) | `7866fba188de719cc3973b80f91ac80671aae35263a6cd5532e1cbc760e2866a` |
+| 从 **c24** 起（release，固定 upload key） | `f9da457649cb966f75833c4b95add260c2fbad8f4104de39bc9ab16646c61c62` |
+
+最后那一行就是 `mobile/android/upload-key-sha256.txt` 的值，以后每一版都必须是它。
+（`payload-v0.2.1-c23` 那轮**也**用这把钥匙打出来了、指纹也过了，但它有一个一次点击就能遇到的假「已同步」，所以没有晋升成玩家版 —— 见 Release `v0.2.1-c24` 的说明。）
+
 ## 2. 现在的机制
 
 | 项 | 值 |
@@ -103,11 +118,15 @@ openssl pkcs12 -in "$KS" -nokeys -clcerts | openssl x509 -outform DER | sha256su
 gh secret list -R lilyco-42/StrongholdProtocolClient
 ```
 
-已经发布给玩家的 APK 是谁签的（需要 Android SDK 的 build-tools；不需要时看下一步那条）：
+已经发布给玩家的 APK 是谁签的。**装好这个仓库就能读，不需要 Android SDK**：
 
 ```bash
-"$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs Stronghold-*-android-release.apk
+node tools/check-apk-signature.mjs --expect "$(cat mobile/android/upload-key-sha256.txt)" <apk>
 ```
 
-CI 每次构建都会把这一条的完整输出打在「APK 签名就是那一把钥匙（闸门）」那一步的日志里，
-所以**查历史版本的签名，看那次 run 的日志即可**，不必自己装 SDK。
+它解 APK Signing Block（v2/v3）里的证书，`--expect` 不匹配就 exit 1
+（实测：对已发布的 `Stronghold-0.2.1-c22-android-debug.apk` 回 exit 1 并打出 `7866fba1…`，
+即 §1 表里那把我一次性钥匙；对 `v0.2.1-c24` 的 release 包回 exit 0）。
+为什么不走 `keytool -printcert -jarfile`：minSdk 24 的包**没有 v1 签名**
+（实测 `unzip -l` 里 `META-INF/` 只有 `.version` 与 `app-metadata.properties`，keytool 读不到任何东西）。
+CI 侧用 Google 的 `apksigner`（每个版本的日志里都有完整输出），两边读到的应当是同一个指纹。

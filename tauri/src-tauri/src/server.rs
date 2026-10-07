@@ -12,7 +12,7 @@
 //! - a pinned port keeps the page's origin, and Chromium scopes localStorage by origin — identity token, loadout,
 //!   settings and the remembered server all live there and are lost if the origin moves.
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -161,7 +161,7 @@ pub fn resolve_media_path(root: &Path, raw_url: &str) -> Option<PathBuf> {
     }
     let last = *segments.last()?;
     let lower = last.to_lowercase();
-    let given = AUDIO_EXTS.iter().find(|e| lower.ends_with(e)).copied().unwrap_or("");
+    let given: &str = AUDIO_EXTS.iter().copied().find(|e: &&str| lower.ends_with(*e)).unwrap_or("");
     let stem = if given.is_empty() {
         last.to_string()
     } else {
@@ -182,7 +182,7 @@ pub fn resolve_media_path(root: &Path, raw_url: &str) -> Option<PathBuf> {
         return None;
     }
     let candidates: Vec<String> = if given.is_empty() {
-        AUDIO_EXTS.iter().map(|e| format!("{stem}{e}")).collect()
+        AUDIO_EXTS.iter().copied().map(|e| format!("{stem}{e}")).collect()
     } else {
         vec![format!("{stem}{given}")]
     };
@@ -461,7 +461,7 @@ fn serve_one(mut sock: TcpStream, root: &Path, stats: &Arc<ServeStats>, t0: std:
     let send = |sock: &mut TcpStream, abs: &Path, rng: Option<(u64, u64)>| -> std::io::Result<()> {
         let mut f = std::fs::File::open(abs)?;
         if let Some((s, _e)) = rng {
-            f.seek(std::io::SeekFrom::Start(s))?;
+            f.seek(SeekFrom::Start(s))?;
         }
         let mut buf = [0u8; 128 * 1024];
         let mut left = length as usize;

@@ -401,12 +401,8 @@ fn serve_one(mut sock: TcpStream, root: &Path, stats: &Arc<ServeStats>, t0: std:
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
-    let rel = abs.strip_prefix(root).unwrap_or(Path::new(""));
-    let segments: Vec<&str> = rel
-        .to_string_lossy()
-        .split(std::path::MAIN_SEPARATOR)
-        .filter(|s| !s.is_empty())
-        .collect();
+    let rel = abs.strip_prefix(root).unwrap_or(Path::new("")).to_string_lossy().to_string();
+    let segments: Vec<&str> = rel.split(std::path::MAIN_SEPARATOR).filter(|s| !s.is_empty()).collect();
     let ext = Path::new(&abs)
         .extension()
         .map(|e| format!(".{}", e.to_string_lossy().to_lowercase()))
@@ -546,7 +542,7 @@ mod tests {
         assert!(resolve_target(&root, "/a/../../b").is_none(), "double traversal");
         assert!(resolve_target(&root, "/.hidden").is_none(), "dotfile");
         assert!(resolve_target(&root, "relative/path").is_none(), "must be absolute");
-        assert!(resolve_target(&root, "/with\backslash").is_none(), "backslash is how Windows sneaks around checks");
+        assert!(resolve_target(&root, "/with%5Cbackslash").is_none(), "backslash is how Windows sneaks around checks");
         assert!(resolve_target(&root, "/a%00b").is_none(), "NUL after decoding");
         assert!(resolve_target(&root, "/bad%zz").is_none(), "undecodable percent");
     }

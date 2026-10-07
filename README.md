@@ -28,7 +28,7 @@ npm test                    # 打包流程的单元/契约测试（无游戏 che
 | Windows · 安装器 | `StrongholdProtocol-0.2.1-Setup.exe` | 637,943,028 B（约 608 MiB） | 装到开始菜单，之后与目录版是同一个东西 |
 | 安卓手机（Android 7.0 及以上） | `Stronghold-0.2.1-c24-android-release.apk` | 629,208,646 B（约 600 MiB） | 传到手机 → 点开除 → 允许"未知来源/安装未知应用"。**从 c22 及更早升级上来要先卸载一次**（签名换成固定钥匙了，见上那条说明） |
 | iPhone（iOS 15 及以上） | `Stronghold-0.2.1-c24-ios-unsigned.ipa` | 604,432,277 B（约 576 MiB） | **未签名**，要用你自己的 Apple ID 现签，见下一节 |
-| Windows · 试验（Tauri 壳，不用 Electron） | `StrongholdProtocolTauri_0.2.1_x64-setup.exe` | 549,072,012 B（约 524 MiB） | 比上面的安装器**小 84.8 MiB**；靠系统 WebView2，启动耗时我们**还没在真机上测过**（CI 那台是冷启动的共享机器），遇到白屏/黑屏请回报 |
+| Windows · 试验（Tauri 壳，不用 Electron） | `StrongholdProtocolTauri-0.2.1-setup.exe` | 549,072,012 B（约 524 MiB） | 比上面的安装器**小 84.8 MiB**；靠系统 WebView2，启动耗时我们**还没在真机上测过**（CI 那台是冷启动的共享机器），遇到白屏/黑屏请回报 |
 
 > **安卓升级说明（2026-10-07）**：c22 及更早的 APK 是用"每个构建机器现生成的一次性 debug 签名"打的，
 > 所以**从那些版本升级时会报「与已安装应用签名不同 (-7)」，需要先卸载再装**——卸载会清掉本机的干员调配与设置

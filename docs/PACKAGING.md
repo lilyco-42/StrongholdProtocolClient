@@ -455,11 +455,16 @@ Rust 侧的规则另有 `cargo test`（遍历、别名顺序、Range 钳制、ET
 
 | 形态 | 字节 | 与 Electron 同形态差 |
 | --- | --- | --- |
-| `StrongholdProtocolTauri_0.2.1_x64-setup.exe` | 549,072,012 B（523.6 MiB） | 比 `Setup.exe`（637,943,028 B）**少 84.8 MiB，−13.9 %** |
-| 目录版 `out/StrongholdProtocolTauri` | 解包 858 MB（含 www） | Electron 目录版解包是 1,145.4 MiB |
+| `StrongholdProtocolTauri_0.2.1_x64-setup.exe`（发布时资产名 `StrongholdProtocolTauri-0.2.1-setup.exe`） | 549,072,012 B（523.6 MiB） | 比 `Setup.exe`（637,943,028 B）**少 84.8 MiB，−13.9 %** |
+| 目录版 `out/StrongholdProtocolTauri` | 打成 `StrongholdProtocolTauri-0.2.1-dir.zip` = 598,017,671 B；解包 858 MB（含 www） | Electron 目录版解包是 1,145.4 MiB |
 
 省下来的正是上面那张账里的那部分 Electron 运行时。同一次 runner 上的探针是
 `first_request_ms=9148 main_js_ms=10107 requests=24` —— **这个数不能拿来当"启动快/慢"的结论**：
 共享 runner 上 WebView2 是冷启动、没有硬件加速、运行时可能还得现下载。README 因此把这一行标成"试验"，
 真实机器上的启动表现等玩家回报；装机版仍然只出目录版与安装器两种，**不出 portable**（自解压那条账与壳无关）。
+
+内容侧这一轮也逐个对过：`StrongholdProtocolTauri-0.2.1-dir.zip` 里 `StrongholdProtocolTauri/www/**`
+与本地 payload **13,966 / 13,966 一致（0 缺 0 多 0 字节差）**，和 Electron 目录版是同一标准。
+CI 侧另有两道：`cargo test`（遍历/别名顺序/Range 钳制/日期格式）+ `test/tauri-parity.test.js`（两张表从两边源码各读一遍再比），
+以及对**产物内 www** 再跑一次零外链闸门。
 

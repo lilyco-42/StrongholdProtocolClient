@@ -13,7 +13,7 @@
 //   node tools/check-payload-offline.mjs build/desktop/win-unpacked/resources/www # inside the built exe (asar is
 //                                                                                  # only the shell; the game www
 //                                                                                  # ships next to it)
-//   node tools/check-payload-offline.mjs --zip app-debug.apk                      # inside the built APK
+//   node tools/check-payload-offline.mjs --zip app-release.apk                      # inside the built APK
 //     (an APK is a zip whose entries are deflate-compressed, so grepping the file finds nothing — measured on the
 //      published apk: whole-file count of "fonts.googleapis.com" is 0, while the entry itself contains it twice)
 
@@ -197,7 +197,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   let r;
   let target;
   if (zipAt >= 0) {
-    target = process.argv[zipAt + 1] || 'mobile/android/app/build/outputs/apk/debug/app-debug.apk';
+    target = process.argv[zipAt + 1] || 'mobile/android/app/build/outputs/apk/release/app-release.apk';
     r = checkZipOffline(target);
   } else {
     target = path.resolve(process.argv[2] || 'build/client/www');

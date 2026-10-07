@@ -1005,7 +1005,7 @@ describe('artifact-level offline gate (reads APK zip entries)', () => {
     const android = job('android');
     const ios = job('ios');
     assert.match(desktop, /check-payload-offline\.mjs build\/desktop\/win-unpacked\/resources\/www/, 'desktop: gate over the built exe');
-    assert.match(android, /check-payload-offline\.mjs --zip mobile\/android\/app\/build\/outputs\/apk\/debug\/app-debug\.apk/, 'android: gate over the built apk');
+    assert.match(android, /check-payload-offline\.mjs --zip mobile\/android\/app\/build\/outputs\/apk\/release\/app-release\.apk/, 'android: gate over the built apk');
     // iOS 的产物是一个目录包（.ipa 只是它的 zip 外壳），所以闸门直接扫 .app 里的 public/ —— 路径由那一步自己 find 出来。
     assert.match(ios, /check-payload-offline\.mjs "\$WWW"/, 'ios: gate over the built .app');
     for (const [name, src, build] of [['desktop', desktop, 'npm run pack'], ['android', android, 'gradlew'], ['ios', ios, 'xcodebuild']]) {
@@ -1049,6 +1049,56 @@ describe('artifact-level offline gate (reads APK zip entries)', () => {
     for (const m of wf.matchAll(/\$\{?([A-Za-z_]\w*)\}?([^\x00-\x7F])/g)) {
       assert.equal(m[0][1], '{', `workflow 里 $${m[1]} 紧跟非 ASCII "${m[2]}" —— 改成 \${${m[1]}}（bash 3.2 会把它读成一个变量名）`);
     }
+  });
+
+  // 「与已安装应用签名不同(-7)」是玩家 2026-10-07 报上来的：这个工程原本一个 signingConfig 都没有，CI 跑的是
+  // assembleDebug，于是每个 runner 现场生成一把一次性 debug keystore —— Android 按签名证书决定能不能覆盖安装，
+  // 所以每次发版所有装机玩家都必须卸载重装（连同 localStorage 里的代号/调配/设置一起没）。
+  // 修法是固定一把 upload key，并把「这次和上次是不是同一把钥匙」变成 CI 的产物校验项。下面钉住这套约定。
+  test('the Android lane signs with one fixed upload key and proves it from the artifact', () => {
+    const wf = readFileSync(path.join(ROOT, '.github', 'workflows', 'build-clients.yml'), 'utf8');
+    const gradle = readFileSync(path.join(ROOT, 'mobile', 'android', 'app', 'build.gradle'), 'utf8');
+    const aStart = wf.indexOf('  android:');
+    assert.ok(aStart > 0, 'workflow 里要有 android job');
+    const aRest = wf.slice(aStart + 1);
+    const aNext = aRest.search(/^ {2}[a-z][\w-]*:$/m);
+    const android = aRest.slice(0, aNext === -1 ? aRest.length : aNext);
+
+    // 1) 出货的是 release，不是 debug。
+    assert.match(android, /gradlew\s+assembleRelease/, 'android job 必须打 release');
+    assert.ok(!/gradlew\s+assembleDebug/.test(android), 'android job 不该再出现 assembleDebug：debug 签的是 runner 的一次性钥匙');
+    assert.match(android, /path: mobile\/android\/app\/build\/outputs\/apk\/release\/app-release\.apk/, '上传的必须是 release 包');
+
+    // 2) 钥匙来自仓库 secret，而且这一步排在打包之前（secret 坏掉时一分钟就红，不是二十分钟后）。
+    assert.match(android, /secrets\.ANDROID_KEYSTORE_BASE64/, 'keystore 从仓库 secret 解出');
+    assert.match(android, /secrets\.ANDROID_KEYSTORE_PASSWORD/, '口令同样是 secret');
+    const prep = android.indexOf('准备固定签名钥匙');
+    assert.ok(prep > 0, '要有"准备固定签名钥匙"这一步');
+    assert.ok(prep < android.indexOf('assembleRelease'), '准备钥匙必须早于打包');
+
+    // 3) 同一把钥匙是**闸门**：apksigner 读产物里的证书，和仓库记录的指纹对拍，且必须在产物上传之前。
+    assert.match(android, /-name apksigner/, '用 SDK 自带的 apksigner 读证书');
+    assert.match(android, /verify --print-certs/, '要把证书指纹打印出来');
+    assert.match(android, /mobile\/android\/upload-key-sha256\.txt/, '与仓库记录的指纹对拍');
+    assert.ok(android.indexOf('APK 签名就是那一把钥匙') < android.indexOf('upload-artifact'), '签名闸门必须在上传产物之前');
+
+    // 4) 记录在册的指纹：CI 用 `tr -d ' \n\r'` 读它，所以这个文件里只容得下那一串（注释会把它污染成两次不匹配）。
+    const pin = readFileSync(path.join(ROOT, 'mobile', 'android', 'upload-key-sha256.txt'), 'utf8').trim();
+    assert.match(pin, /^[0-9a-f]{64}$/, `指纹得是 64 位小写十六进制，实为 ${JSON.stringify(pin)}`);
+
+    // 5) 私钥不出门：本仓库是 PUBLIC 的，keystore 一旦提交，任何人都能签出一个老玩家会自动接受的更新包。
+    const gi = readFileSync(path.join(ROOT, 'mobile', 'android', '.gitignore'), 'utf8');
+    assert.match(gi, /^keystore\.properties$/m, 'keystore.properties 必须 gitignore');
+    assert.match(gi, /^keystore\/$/m, 'keystore/ 目录必须 gitignore');
+
+    // 6) gradle 侧：缺钥匙时 release 必须失败。AGP 对没配签名的 release 的做法是**静默产出未签名 APK**，
+    //    那个包会一路走到玩家手机上才报错，比 CI 红一次难看得多。
+    assert.match(gradle, /signingConfigs\s*\{[\s\S]*?release\s*\{[\s\S]*?storeFile\s*=/, '要定义 release signingConfig');
+    assert.match(gradle, /signingConfig\s*=\s*signingConfigs\.release/, 'release buildType 必须真的用上它');
+    const thr = gradle.indexOf('throw new GradleException');
+    assert.ok(thr > 0, '缺钥匙时必须 throw');
+    assert.ok(thr < gradle.indexOf('android {'), '缺钥匙的检查要在配置阶段生效（写在 android{} 之前）');
+    assert.ok(gradle.includes('ANDROID_KEYSTORE_BASE64'), '报错文案要把 secret 名字写出来，CI 日志才自证');
   });
 
   // 版本号的唯一真源是 package.json，四个地方要跟着它走（tools/package-release.mjs 的 alignVersions 负责写）。

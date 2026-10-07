@@ -77,7 +77,7 @@ payload = 游戏代码 + **266 MB 素材**。素材不在游戏仓库的 git 里
                     ┌───────────┴───────────┐
                     ▼                       ▼
             stronghold-desktop-win   stronghold-android-apk
-              （win-unpacked.zip）        （app-debug.apk）
+              （win-unpacked.zip）        （app-release.apk）
 ```
 
 ## 生成 payload（服务器上）

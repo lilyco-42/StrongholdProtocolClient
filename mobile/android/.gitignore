@@ -99,3 +99,8 @@ app/src/main/assets/public
 app/src/main/assets/capacitor.config.json
 app/src/main/assets/capacitor.plugins.json
 app/src/main/res/xml/config.xml
+
+# 固定签名钥匙（见 docs/ANDROID-SIGNING.md）：CI 从仓库 secret 解出后写在这两个位置。
+# 绝不提交——本仓库是 PUBLIC 的，私钥一旦出门，任何人都能签出一个老玩家会自动接受的更新包。
+keystore.properties
+keystore/

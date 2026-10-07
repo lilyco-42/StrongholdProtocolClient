@@ -175,15 +175,18 @@ Android 不需要这个处理：Capacitor 固定从 `https://localhost` 提供�
 
 **关于 `allowMixedContent`**：WebView 的页面本身是 `https://localhost`（`androidScheme`），而自建的局域网服务器只有 `ws://`（没有证书），Chromium 会把它当 mixed content 拦掉——`usesCleartextTraffic` 只管系统层的明文策略，管不了这个。所以 APK 里打开了 `allowMixedContent`，让选择服务器页里的 `ws://<局域网地址>:3000` 能用。**代价**：这一层保护没了，页面里的其他连接也可以降级到明文；官方服务器仍然走 `wss://`。不想要局域网联机的话，把 `mobile/capacitor.config.json` 改回 `false` 重新打包即可（`localhost` 属于"可信来源"，不受影响）。
 
-产物：`mobile/android/app/build/outputs/apk/debug/app-debug.apk`（debug 签名，可直接安装）。安装：`adb install -r <apk>`，或把 APK 拷到手机点开（需允许「安装未知应用」）。
+产物：`mobile/android/app/build/outputs/apk/release/app-release.apk`（release 签名，可直接安装）。安装：`adb install -r <apk>`，或把 APK 拷到手机点开（需允许「安装未知应用」）。
 
-发布用的 release APK 需要自己签名：
+> 2026-10-07 之前这里写的是"debug 包，可直接安装；发布用的 release 需要自己签名"，并给了一条 `keytool -genkeypair`
+> 的待办。**那条待办已经落地，而且落地方式是"必须有固定钥匙，否则 release 直接失败"**：
+> debug 包签的是每个 CI runner 现生成的一次性钥匙，玩家覆盖安装必报 -7（要卸载重装，连带丢 localStorage）。
+> 钥匙、指纹、闸门、玩家侧影响与轮换流程见 **`docs/ANDROID-SIGNING.md`**。
+> 本地随手测试仍然可以 `./gradlew assembleDebug`（不需要那把钥匙），但**发给玩家的必须是 release**。
 
-```bash
-keytool -genkeypair -keystore stronghold.jks -alias stronghold -keyalg RSA -keysize 2048 -validity 10000
-# 在 mobile/android/app/build.gradle 里加 signingConfigs 并让 release 用它，然后：
-node tools/package-android.mjs --release
-```
+CI 那条路（`build-clients.yml` 的 android job）已经自带钥匙：它从仓库 secret 解出 `mobile/android/keystore/`，
+跑 `assembleRelease`，再用 `apksigner` 核对产物指纹。本地跑 `node tools/package-android.mjs --release` 时需要自己写
+`mobile/android/keystore.properties`（四个键的名字见 `docs/ANDROID-SIGNING.md` §3），缺它时 gradle 会 throw 而不是
+出一个装不上的未签名包。
 
 ### 首次准备 Android SDK
 

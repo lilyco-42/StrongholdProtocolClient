@@ -10,7 +10,7 @@ name: build-clients
 #
 # 产物：
 #   stronghold-desktop-win  -> StrongholdProtocol-desktop.zip（解压即用，启动 ~0.3s）
-#   stronghold-android-apk  -> app-debug.apk
+#   stronghold-android-apk  -> app-release.apk（固定 upload key 签名，见 docs/ANDROID-SIGNING.md）
 
 on:
   workflow_dispatch:
@@ -164,6 +164,22 @@ jobs:
           distribution: temurin
           java-version: '21'
 
+      # 固定签名钥匙（见 docs/ANDROID-SIGNING.md）放在最前面：secret 坏掉时一分钟就红，不用等 SDK + npm + gradle
+      # 二十分钟。keytool 只验证「这把钥匙能解开、别名在」，不打印任何私钥材料或口令。
+      - name: 准备固定签名钥匙（release）
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [ -n "${KS_B64:-}" ] || { echo "闸门：仓库缺 secret ANDROID_KEYSTORE_BASE64 —— 见 docs/ANDROID-SIGNING.md"; exit 1; }
+          [ -n "${KS_PASS:-}" ] || { echo "闸门：仓库缺 secret ANDROID_KEYSTORE_PASSWORD"; exit 1; }
+          mkdir -p mobile/android/keystore
+          printf '%s' "$KS_B64" | base64 -d > mobile/android/keystore/upload-keystore.p12
+          printf 'storeFile=keystore/upload-keystore.p12\nstorePassword=%s\nkeyAlias=stronghold\nkeyPassword=%s\n' "$KS_PASS" "$KS_PASS" > mobile/android/keystore.properties
+          keytool -list -keystore mobile/android/keystore/upload-keystore.p12 -storepass "$KS_PASS" -alias stronghold > /dev/null
+          echo "keystore 可解，别名 stronghold 存在"
+
       # 不用 android-actions/setup-android@v3：它会去装早已从 SDK 仓库下架的 legacy `tools` 包，
       # 报 `Warning: Failed to find package 'tools'` 然后 exit 1，整条 job 直接挂。
       # ubuntu-latest 镜像自带 Android SDK，补装我们要的 platform / build-tools 就够了。
@@ -253,28 +269,50 @@ jobs:
       - name: 同步 web 资源到 Android 工程
         run: cd mobile && npx cap sync android
 
-      - name: 打 APK
+      # release 而不是 debug：debug 包签的是 runner 现生成的一次性钥匙，每个构建都不同，所以玩家覆盖安装必报
+      # INSTALL_FAILED_UPDATE_INCOMPATIBLE(-7)「与已安装应用签名不同」。app/build.gradle 在没有固定钥匙时会
+      # 直接失败，不会静默出一个装不上的未签名包。
+      - name: 打 APK（release，固定钥匙）
         run: |
           cd mobile/android
           chmod +x ./gradlew
-          ./gradlew assembleDebug --no-daemon --stacktrace
+          ./gradlew assembleRelease --no-daemon --stacktrace
 
       - name: 校验 APK
         run: |
-          APK=mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          APK=mobile/android/app/build/outputs/apk/release/app-release.apk
           test -f "$APK" || { echo "APK 没生成"; find mobile/android/app/build -name '*.apk' 2>/dev/null; exit 1; }
           ls -lh "$APK"
           unzip -l "$APK" | grep -E 'assets/public/index.html|assets/public/assets/' | head -5
 
+      # 「这次和上次是不是同一把钥匙」得是产物校验项，不能只是约定：apksigner 从 APK 里读出签名证书，
+      # 与仓库记录的指纹对拍。换钥匙（或误用 debug 钥匙）在这里就红，而不是等玩家装不上才发现。
+      - name: APK 签名就是那一把钥匙（闸门）
+        run: |
+          set -euo pipefail
+          APK=mobile/android/app/build/outputs/apk/release/app-release.apk
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          APKSIGNER=$(find "$SDK/build-tools" -maxdepth 3 -type f -name apksigner | sort | tail -1)
+          echo "apksigner=$APKSIGNER"
+          [ -n "$APKSIGNER" ] && [ -x "$APKSIGNER" ] || { echo "闸门：找不到 apksigner（build-tools）"; ls "$SDK/build-tools"; exit 1; }
+          "$APKSIGNER" verify --print-certs "$APK" > sp-signature.txt
+          cat sp-signature.txt
+          WANT=$(tr -d ' \n\r' < mobile/android/upload-key-sha256.txt | tr 'A-F' 'a-f')
+          GOT=$(sed -n 's/.*SHA-256 digest[: ]*\([0-9a-fA-F:]*\).*/\1/p' sp-signature.txt | head -1 | tr -d ':' | tr 'A-F' 'a-f')
+          [ -n "$GOT" ] || { echo "闸门：apksigner 没给出 SHA-256 指纹"; exit 1; }
+          [ "$GOT" = "$WANT" ] || { echo "闸门：APK 签名指纹 $GOT ≠ 仓库记录的 $WANT —— 换过钥匙？装了旧包的玩家会装不上"; exit 1; }
+          "$APKSIGNER" verify "$APK"
+          echo "签名指纹与仓库记录一致：$GOT"
+
       # APK 是把 www 压进 assets/public/ 的 zip：整包 grep 是 0 命中，必须按条目解开来查（已发布的那份就是这么漏网的）。
       - name: 零外部依赖（产物内，闸门）
         shell: bash
-        run: node tools/check-payload-offline.mjs --zip mobile/android/app/build/outputs/apk/debug/app-debug.apk
+        run: node tools/check-payload-offline.mjs --zip mobile/android/app/build/outputs/apk/release/app-release.apk
 
       - uses: actions/upload-artifact@v4
         with:
           name: stronghold-android-apk
-          path: mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          path: mobile/android/app/build/outputs/apk/release/app-release.apk
           retention-days: 7
 
   # ---------- iPhone 版（**未签名** .ipa，玩家自己用 AltServer / SideStore 签）----------

@@ -13,7 +13,7 @@
 | `npm run client:build` | `build/client/www` | 265.7 MB / 4157 文件 | 只是摊平的 payload，用来自托管/调试 |
 | `npm run client:desktop` | `build/desktop/win-unpacked/`（exe + 依赖目录） | 585.5 MB，exe 本身 234.3 MB | **默认形态**，双击到首屏 ~0.3 s |
 | `npm run client:desktop -- --portable` | `StrongholdProtocol-<ver>-portable.exe` | ~253 MB | 单文件，首屏 **~24 s**（每次启动都把整个应用解到 `%TEMP%`） |
-| `npm run client:android` | `mobile/android/app/build/outputs/apk/debug/app-debug.apk` | 192.4 MB | debug 包；`--release` 出未签名的 release |
+| `npm run client:android` | `mobile/android/app/build/outputs/apk/debug/app-debug.apk` | 192.4 MB | 仅本地测试；**发玩家要用 `--release`**，它需要固定签名钥匙（`docs/ANDROID-SIGNING.md`），缺钥匙时 gradle 直接报错 |
 | `npm test` | —— | 36 用例 | `packaging/picker/status`；没有游戏 checkout 时自动 skip |
 
 默认连 `game.starst.site`。三个仓库分工：**游戏仓库**（`../Stronghold-Protocol`，要能跟上游对齐）／

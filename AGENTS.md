@@ -36,9 +36,16 @@ gh release create payload-<ver> <tar.gz> --repo lilyco-42/StrongholdProtocolClie
 gh workflow run build-clients.yml -f payload_url=<release 资产 URL> -f expect_app=<ver>
 ```
 
-`build-clients.yml` 的两个校验步骤是**闸门**，不是装饰：
-`assets` 文件数 > 3000，以及 `expect_app` 必须等于 payload 的 `game.app`。
-**没有第二条闸门时，CI 会绿着发布旧 payload**（0.1.1 就这么混出去过两次，见 `docs/BUILD-CI.md`）。
+`build-clients.yml` 里那些标着「闸门」的步骤是**闸门**，不是装饰：每个 job 有
+完整性（`assets` 文件数 > 3000）、版本（`expect_app` 必须等于 payload 的 `game.app`）、出处、零外链，
+android 还多一道**签名指纹对拍**。
+**没有第二条闸门时，CI 会绿着发布旧 payload**（0.1.1 就这么混出去过两次，见 `docs/BUILD-CI.md`）；
+**没有签名闸门时，CI 会绿着发出一个每次都换钥匙的 APK**，玩家每跟一版都要卸载重装
+（0.2.1-c22 就是这样让装机玩家报 -7 的，见 `docs/ANDROID-SIGNING.md`）。
+
+⚠️ 私钥不进仓库，也不进日志：本仓库是 PUBLIC 的，`mobile/android/keystore/` 与 `keystore.properties`
+已 gitignore 并被测试钉住；钥匙本身只存仓库 secret `ANDROID_KEYSTORE_BASE64` / `ANDROID_KEYSTORE_PASSWORD`。
+要改 Android 打包链路前先读 `docs/ANDROID-SIGNING.md` §5（丢钥匙 / 换钥匙的代价）。
 
 ## 4. `patches/game-client.patch`：漂移会大声失败，这是设计
 

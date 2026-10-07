@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 
 import { applyPatch, parsePatch, stripPath } from '../tools/unified-diff.mjs';
 import { versionCode } from '../tools/package-release.mjs';
-import { DATA_SHIM_JS, SIM_PRIVATE, findGameRoot, isGameRoot, readGameContract, verifyGameContract, readProtocolVersion } from '../tools/game-contract.mjs';
+import { DATA_SHIM_JS, SIM_PRIVATE, findGameRoot, isGameRoot, readGameContract, verifyGameContract, readProtocolVersion, findContractFile } from '../tools/game-contract.mjs';
 import { PATCHED_FILES, applyPayloadPatch, assertPatched } from '../tools/payload-patches.mjs';
 import { assembleClient, runtimeConfigSource, DEFAULT_SERVER, CLIENT_ROOT, SHELL_FILES, parseCommonArgs } from '../tools/package-client.mjs';
 import { desktopTargets } from '../tools/package-desktop.mjs';
@@ -150,9 +150,12 @@ describe('game-repo contract', { skip: GAME_ROOT ? false : 'no Stronghold-Protoc
     assert.ok(!text.includes('\uFEFF'), 'no BOM');
   });
 
-  test('DATA_SHIM_JS / SIM_PRIVATE match server/index.js', () => {
+  test('DATA_SHIM_JS / SIM_PRIVATE match the game server source', () => {
     assert.doesNotThrow(() => verifyGameContract(GAME_ROOT));
-    const { shim, simPrivate } = readGameContract(readFileSync(path.join(GAME_ROOT, 'server', 'index.js'), 'utf8'));
+    // 0.2.0 moved them from server/index.js to server/http/static.js — resolve, never hardcode
+    const rel = findContractFile(GAME_ROOT);
+    assert.ok(['server/http/static.js', 'server/index.js'].includes(rel), `unexpected contract home: ${rel}`);
+    const { shim, simPrivate } = readGameContract(readFileSync(path.join(GAME_ROOT, rel), 'utf8'), rel);
     assert.equal(shim, DATA_SHIM_JS);
     assert.deepEqual(simPrivate, [...SIM_PRIVATE]);
     assert.equal(typeof readProtocolVersion(GAME_ROOT), 'number');
@@ -161,9 +164,13 @@ describe('game-repo contract', { skip: GAME_ROOT ? false : 'no Stronghold-Protoc
 
   test('the shell serves the payload with the game server"s MIME table', async () => {
     const { MIME } = await import('../desktop/serve.mjs');
-    const src = readFileSync(path.join(GAME_ROOT, 'server', 'index.js'), 'utf8');
+    const rel = ['server/http/files.js', 'server/index.js'].find((r) => {
+      try { return /export const MIME = Object\.freeze\(/.test(readFileSync(path.join(GAME_ROOT, r), 'utf8')); } catch { return false; }
+    });
+    assert.ok(rel, 'MIME 表找不到：游戏仓库把它挪到了 server/ 下的哪个文件？');
+    const src = readFileSync(path.join(GAME_ROOT, rel), 'utf8');
     const block = /export const MIME = Object\.freeze\(\{([\s\S]*?)\n\}\);/.exec(src);
-    assert.ok(block, 'MIME 表解析失败：游戏仓库 server/index.js 的 MIME 写法变了');
+    assert.ok(block, `MIME 表解析失败：${rel} 的写法变了`);
     const pairs = [...block[1].matchAll(/'([^']+)':\s*'([^']+)'/g)].map((m) => [m[1], m[2]]);
     assert.ok(pairs.length > 20, `MIME 表只解析出 ${pairs.length} 条，解析可能失效`);
     assert.deepEqual({ ...MIME }, Object.fromEntries(pairs));

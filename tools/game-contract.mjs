@@ -52,15 +52,30 @@ export function readAppVersion(gameRoot) {
 }
 
 /**
- * Read DATA_SHIM_JS / SIM_PRIVATE out of the game's server/index.js source.
- * @param {string} source
+ * Where a game checkout declares the payload contract. 0.2.0 split `server/index.js` into `server/http/*.js`, so the
+ * new home is tried first and the old one still works (an older checkout must stay packageable).
+ */
+export const CONTRACT_FILES = Object.freeze(['server/http/static.js', 'server/index.js']);
+
+/** The first checkout file that actually declares DATA_SHIM_JS. @throws when none of them does. */
+export function findContractFile(gameRoot) {
+  for (const rel of CONTRACT_FILES) {
+    const abs = path.join(gameRoot, rel);
+    if (fs.existsSync(abs) && /export const DATA_SHIM_JS = `/.test(fs.readFileSync(abs, 'utf8'))) return rel;
+  }
+  throw new Error(`${CONTRACT_FILES.join(' or ')}: DATA_SHIM_JS not found — the game repo moved it again, update tools/game-contract.mjs`);
+}
+
+/**
+ * Read DATA_SHIM_JS / SIM_PRIVATE out of the game's server source.
+ * @param {string} source @param {string} [where] file name to blame in the error
  * @returns {{ shim: string, simPrivate: string[] }}
  */
-export function readGameContract(source) {
+export function readGameContract(source, where = 'server/index.js') {
   const shim = /export const DATA_SHIM_JS = `([\s\S]*?)`;/.exec(source);
   const priv = /const SIM_PRIVATE = new Set\(\[([^\]]*)\]\)/.exec(source);
-  if (!shim) throw new Error('server/index.js: DATA_SHIM_JS not found — update tools/game-contract.mjs');
-  if (!priv) throw new Error('server/index.js: SIM_PRIVATE not found — update tools/game-contract.mjs');
+  if (!shim) throw new Error(`${where}: DATA_SHIM_JS not found — update tools/game-contract.mjs`);
+  if (!priv) throw new Error(`${where}: SIM_PRIVATE not found — update tools/game-contract.mjs`);
   return {
     shim: shim[1],
     simPrivate: [...priv[1].matchAll(/'([^']+)'|"([^"]+)"/g)].map((m) => (m[1] ?? m[2]).toLowerCase()),
@@ -72,8 +87,9 @@ export function readGameContract(source) {
  * @param {string} gameRoot
  */
 export function verifyGameContract(gameRoot) {
-  const file = path.join(gameRoot, 'server', 'index.js');
-  const { shim, simPrivate } = readGameContract(fs.readFileSync(file, 'utf8'));
+  const rel = findContractFile(gameRoot);
+  const file = path.join(gameRoot, rel);
+  const { shim, simPrivate } = readGameContract(fs.readFileSync(file, 'utf8'), rel);
   if (shim !== DATA_SHIM_JS) {
     throw new Error(`${file}: DATA_SHIM_JS changed upstream — sync it in tools/game-contract.mjs and re-run the tests`);
   }

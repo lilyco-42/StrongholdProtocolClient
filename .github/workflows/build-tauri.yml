@@ -43,10 +43,16 @@ jobs:
       - name: 装 Rust 工具链
         uses: dtolnay/rust-toolchain@stable
 
+      # 缓存必须"失败也存"：前三次构建都死在 cargo test 上，若只在成功时保存，
+      # 每次都要从零重编 tauri 的依赖（release + fat LTO 一段就是好几分钟）。
+      # key 绑 Cargo.lock：依赖没变就命中，变了就重建，不会拿到半新半旧的 target/。
       - name: 缓存 cargo
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: tauri/src-tauri
+          cache-workspaces: tauri/src-tauri
+          save-always: true
+          key: payload-${{ hashFiles('tauri/src-tauri/Cargo.lock') }}
 
       - name: 下载并解压 payload
         shell: bash

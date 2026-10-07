@@ -33,6 +33,10 @@ export const GAME_MOUNTS = Object.freeze([
   { src: 'data', dst: 'data' },
   { src: 'shared', dst: 'shared' },
   { src: 'server/sim', dst: 'sim' },
+  // Content packs (0.2.0, docs/PACKS.md): a static host has no server registry, so the payload carries the folder and
+  // tools/package-client.mjs generates `packs/index.json` for it. `optional` = an older game checkout has no packs/ at
+  // all, which is not a defect.
+  { src: 'packs', dst: 'packs', optional: true },
 ]);
 
 /** PROTOCOL_VERSION from the game's shared/constants.js (the wire-format gate checked in `hello`). */

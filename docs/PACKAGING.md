@@ -25,6 +25,7 @@ npm run client:build        # 只生成 build/client/www（想用自己的静态
 | 目标 | 需要 |
 |---|---|
 | 通用 | Node.js 22 / 24；一个**游戏仓库 checkout**（`Stronghold-Protocol`，默认同级 `../Stronghold-Protocol`，可用 `--game` / `SP_GAME_ROOT` / `client.config.json` 指定），且已 `npm install` + `npm run assets` 下载素材——**没有素材的客户端只是个空壳** |
+| gitignore 的派生登记 | `data/voice-langs.json`（包内有哪几种配音、各多少条）与 `public/assets/` 一样**不入 git**，所以**每个 checkout 各有一份**。新开一个 worktree 直接打包，包里就没有这行设置（不静音，是开关整个不长出来）。打包前在游戏仓跑 `node tools/voice-langs.mjs --write`；`data/local-assets.json` 同理。 |
 | exe | 无额外要求（`electron` / `electron-builder` 由 `desktop/` 的 `npm install` 装）；出 zip 用资源管理器右键，出 7z/zip 更小可用 7-Zip（可选） |
 | apk | JDK 17+（`JAVA_HOME`）、Android SDK（`ANDROID_HOME`）含 `platforms;android-36` 与 `build-tools;36.0.0`、并已接受许可协议（见 §5） |
 

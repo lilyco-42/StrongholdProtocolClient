@@ -13,7 +13,7 @@ import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import zlib from 'node:zlib';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, statSync, symlinkSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -240,6 +240,35 @@ describe('client payload assembly', () => {
     assert.ok(!readFileSync(path.join(game.root, 'public', 'js', 'net.js'), 'utf8').includes('__SP_SERVER__'), 'the checkout is never modified');
     // manifest.json lands next to www/ for the build scripts
     assert.equal(JSON.parse(readFileSync(path.join(game.root, 'build', 'client', 'manifest.json'), 'utf8')).server, DEFAULT_SERVER);
+  });
+
+  test('a mount subdir that is a symlink is mirrored, not skipped (worktrees link public/assets)', (t) => {
+    const game = makeGameFixture();
+    const artRoot = mkdtempSync(path.join(tmpdir(), 'sp-art-'));
+    const cleanup = () => {
+      rmSync(game.root, { recursive: true, force: true });
+      rmSync(path.dirname(game.patchFile), { recursive: true, force: true });
+      rmSync(artRoot, { recursive: true, force: true });
+    };
+    try {
+      const linked = path.join(game.root, 'public', 'assets');
+      renameSync(linked, path.join(artRoot, 'art'));
+      // 'junction' needs no privileges on Windows; the type is ignored on POSIX.
+      symlinkSync(path.join(artRoot, 'art'), linked, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (e) {
+      cleanup();
+      t.skip(`symlinks unavailable: ${e.code || e.message}`);
+      return;
+    }
+    try {
+      const out = path.join(game.root, 'build', 'linked', 'www');
+      const r = assembleClient({ gameRoot: game.root, patchFile: game.patchFile, out, log: () => {} });
+      assert.equal(r.missingAssets, false, 'the linked assets/ must count as present');
+      assert.ok(existsSync(path.join(out, 'assets', 'char', 'x.png')), 'assets/char/x.png behind the link');
+      assert.equal(readFileSync(path.join(out, 'assets', 'char', 'x.png'), 'utf8'), 'png');
+    } finally {
+      cleanup();
+    }
   });
 
   test('is incremental and drops payload files whose source is gone', () => {

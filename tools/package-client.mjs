@@ -111,8 +111,19 @@ export function assembleClient(opts = {}) {
       const rel = stack.pop();
       for (const e of fs.readdirSync(path.join(srcRoot, rel), { withFileTypes: true })) {
         const childRel = rel ? `${rel}/${e.name}` : e.name;
-        if (e.isDirectory()) { stack.push(childRel); continue; }
-        if (!e.isFile()) continue;
+        let isDir = e.isDirectory();
+        let isFile = e.isFile();
+        if (!isDir && !isFile) {
+          // A symlink/junction: readdir's Dirent reports neither, and a silent skip here once dropped every asset from
+          // a payload built from a worktree whose public/assets is a link to another checkout. Resolve it instead.
+          try {
+            const st = fs.statSync(path.join(srcRoot, childRel));
+            isDir = st.isDirectory();
+            isFile = st.isFile();
+          } catch { continue; } // broken link — there is nothing to mirror
+        }
+        if (isDir) { stack.push(childRel); continue; }
+        if (!isFile) continue;
         if (keep && !keep(childRel)) continue;
         const relOut = relDst ? `${relDst}/${childRel}` : childRel;
         if (DERIVED.has(relOut)) continue;

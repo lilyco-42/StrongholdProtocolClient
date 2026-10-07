@@ -451,3 +451,15 @@ Rust 侧的规则另有 `cargo test`（遍历、别名顺序、Range 钳制、ET
 `boot_probe first_request_ms=… main_js_ms=… requests=…`，流水线里那一步就是拿它当启动耗时的证据
 （runner 上没有 WebView2 时会失败，所以那一步是 `continue-on-error`，不把它当成产品坏了）。
 
+**c24 的两个形态实测大小**（同一份 payload，`build-tauri.yml` run `37671372625`）：
+
+| 形态 | 字节 | 与 Electron 同形态差 |
+| --- | --- | --- |
+| `StrongholdProtocolTauri_0.2.1_x64-setup.exe` | 549,072,012 B（523.6 MiB） | 比 `Setup.exe`（637,943,028 B）**少 84.8 MiB，−13.9 %** |
+| 目录版 `out/StrongholdProtocolTauri` | 解包 858 MB（含 www） | Electron 目录版解包是 1,145.4 MiB |
+
+省下来的正是上面那张账里的那部分 Electron 运行时。同一次 runner 上的探针是
+`first_request_ms=9148 main_js_ms=10107 requests=24` —— **这个数不能拿来当"启动快/慢"的结论**：
+共享 runner 上 WebView2 是冷启动、没有硬件加速、运行时可能还得现下载。README 因此把这一行标成"试验"，
+真实机器上的启动表现等玩家回报；装机版仍然只出目录版与安装器两种，**不出 portable**（自解压那条账与壳无关）。
+

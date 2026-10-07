@@ -264,6 +264,8 @@ globalThis.__SP_SERVER__ = ${JSON.stringify(server)};
 export const SHELL_FILES = [
   ['picker.js', 'js/shell/picker.js'],
   ['picker-core.js', 'js/shell/picker-core.js'],
+  // The second server-list channel (docs/SERVER-LIST.md): the picker imports it statically, so it must be here.
+  ['serverList.js', 'js/shell/serverList.js'],
   ['display.css', 'css/shell-display.css'],
 ];
 

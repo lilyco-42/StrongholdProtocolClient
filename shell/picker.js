@@ -28,6 +28,9 @@ import {
   addressError, ambiguousScheme, autostartOn, cleanName, customFrom, isAndroidUA, isFullscreenHotkey, isPickerHotkey, missingSeeds, orderCandidates,
   pathOf, probeReason, rootWsUrl, serverName, shellFullscreenUrl, shouldShowPicker, forEachLimited,
 } from './picker-core.js';
+// The second server-list channel (docs/SERVER-LIST.md): ask a server which other servers it recommends. Absent
+// endpoint / no CORS / a dead host are all the same "no answer" and change nothing — see shell/serverList.js.
+import { K_DISMISSED, addDismissed, fetchServers, newServerEntries, parseDismissed, pickServers, serversUrl } from './serverList.js';
 
 // Cross-region mobile TLS handshakes sometimes need more than four seconds.
 const PROBE_TIMEOUT_MS = 6500;
@@ -466,6 +469,9 @@ function mount() {
       card.addEventListener('click', (ev) => {
         if (ev.target.classList.contains('sp-pick__del')) {
           writeItem(K_LIST, JSON.stringify(customServers().filter((e) => toWsUrl(e.address) !== s.key)), 'localStorage');
+          // Remember it too: a runtime /servers.json list may offer this address again on the next launch, and a
+          // deletion the player has to redo every time is not a deletion. (Static seeding keeps using K_SEED.)
+          writeItem(K_DISMISSED, addDismissed(readItem(K_DISMISSED, 'localStorage'), s.key), 'localStorage');
           loadList();
           return;
         }
@@ -523,6 +529,44 @@ function mount() {
     states.clear();
     renderList();
     queueRefreshAll();
+    discoverServers();
+  }
+
+  /** Guards against discovering more than once per launch (the list is re-rendered on every keystroke-sized change). */
+  let discoveryStarted = false;
+
+  /**
+   * The second server-list channel (docs/SERVER-LIST.md): ask the server we are about to use for the servers IT
+   * recommends, and append anything new to the player's own list. Deliberately fire-and-forget:
+   *
+   *   * it never blocks entering a game — the box is already usable, this only adds rows later;
+   *   * it runs at most once per launch, never polls and never retries, so a server that just died can never turn
+   *     into a several-second stall on every render;
+   *   * every failure (404, no CORS, timeout, bad JSON) is one outcome — silence. Almost no server on the network
+   *     implements this, and saying so in the UI would be noise;
+   *   * entries the player deleted are skipped (K_DISMISSED) so this cannot resurrect them.
+   */
+  function discoverServers() {
+    if (discoveryStarted) return;
+    discoveryStarted = true;
+    const base = toHttpUrl(selected || buildDefault());
+    const url = serversUrl(base);
+    if (!url) return;
+    fetchServers(url).then((data) => {
+      const picked = pickServers(data, { keyOf: (a) => toWsUrl(a) });
+      if (!picked || !picked.length) return;   // null = "no answer"; [] = "the server knows no others"
+      const existing = customServers();
+      const add = newServerEntries(picked, existing.map((e) => toWsUrl(e.address)), parseDismissed(readItem(K_DISMISSED, 'localStorage')), (a) => toWsUrl(a));
+      if (!add.length) return;
+      // Append, never replace: the seeding's promise (and the player's own edits) stay untouched.
+      writeItem(K_LIST, JSON.stringify(existing.concat(add)), 'localStorage');
+      list = serverList();
+      renderList();
+      for (const s of add) {
+        const found = list.find((e) => e.key === keyOf(s.address));
+        if (found) refresh(found);
+      }
+    });
   }
 
   /**

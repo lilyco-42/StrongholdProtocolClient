@@ -1,0 +1,196 @@
+name: build-tauri
+
+# 《卫戍协议：盟约》的 Tauri 壳：系统 WebView2，不再自带 Chromium。
+#
+# 为什么单独一条流水线而不是往 build-clients.yml 里加一步：这条要装 Rust 工具链、要跑 cargo test、
+# 产物名与形态也不同（目录版 + 安装器，**没有**单文件自解压版 —— 启动慢的实测主因就是每次启动解 974 MB 那个）。
+# payload 仍旧来自同一个 tar.gz（同一条 payload_url 输入），所以三条闸门与 Electron 那条完全一样：
+# 完整性 / expect_app / 出处 / 零外链，一条都不能少。
+#
+# 产物（stronghold-tauri-win）：
+#   StrongholdProtocolTauri-<ver>-setup.exe        NSIS 安装器（WebView2 已装的机器不会联网下载它）
+#   StrongholdProtocolTauri-<ver>-dir.zip          解压即用：exe + 同目录的 www/
+
+on:
+  workflow_dispatch:
+    inputs:
+      payload_url:
+        description: '客户端 payload 包（tar.gz，内含 index.html / js / assets / data …）'
+        required: true
+      server:
+        description: '校验用：payload 内 runtime-config.js 应当指向的服务器'
+        required: false
+        default: 'sp.lain42.top'
+      expect_app:
+        description: '闸门：payload 内 build.json 的 game.app 必须等于此值；留空则要求等于本仓库 package.json 的 version'
+        required: false
+        default: ''
+
+env:
+  NODE_VERSION: '22'
+  WWW_DIR: tauri/src-tauri/www
+
+jobs:
+  windows-tauri:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: 装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tauri/src-tauri
+
+      - name: 下载并解压 payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="${{ github.event.inputs.payload_url }}"
+          echo "payload: $URL"
+          mkdir -p "$WWW_DIR"
+          curl -fL --retry 3 --retry-delay 3 "$URL" -o payload.tar.gz
+          ls -lh payload.tar.gz
+          tar -xzf payload.tar.gz -C "$WWW_DIR"
+          echo "解压文件数: $(find "$WWW_DIR" -type f | wc -l)"
+          du -sh "$WWW_DIR"
+
+      # 与 Electron 那条同一套闸门，因为出厂的是同一份 payload：少一个检查项就等于"能发但没人保证内容"。
+      - name: 校验 payload 完整性
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in index.html js/runtime-config.js js/shell/picker.js js/net.js; do
+            test -f "$WWW_DIR/$f" || { echo "缺 $f"; exit 1; }
+          done
+          ASSETS=$(find "$WWW_DIR/assets" -type f 2>/dev/null | wc -l)
+          echo "素材文件数: $ASSETS"
+          test "$ASSETS" -gt 3000 || { echo "素材不完整（只有 $ASSETS 个）"; exit 1; }
+          echo "--- build.json ---"
+          cat "$WWW_DIR/build.json"
+
+      - name: 校验 payload 版本（闸门）
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECT="${{ github.event.inputs.expect_app }}"
+          WANT_SERVER="${{ github.event.inputs.server }}"
+          REPO=$(node -e 'console.log(JSON.parse(require("fs").readFileSync("package.json","utf8")).version)')
+          APP=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.env.WWW_DIR + "/build.json","utf8")).game.app)')
+          GOT_SERVER=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.env.WWW_DIR + "/build.json","utf8")).server)')
+          echo "payload: game.app=$APP server=$GOT_SERVER ；本仓库 version=$REPO"
+          if [ -n "$EXPECT" ]; then
+            [ "$APP" = "$EXPECT" ] || { echo "闸门：要求 expect_app=${EXPECT}，payload 实为 $APP"; exit 1; }
+          else
+            [ "$APP" = "$REPO" ] || { echo "闸门：payload 是 ${APP}，本仓库已对齐 $REPO"; exit 1; }
+          fi
+          if [ -n "$WANT_SERVER" ]; then
+            [ "$GOT_SERVER" = "$WANT_SERVER" ] || { echo "闸门：要求 server=${WANT_SERVER}，payload 实为 $GOT_SERVER"; exit 1; }
+          fi
+
+      - name: payload 出处（闸门）
+        shell: bash
+        run: node tools/check-payload-provenance.mjs "$WWW_DIR"
+
+      - name: 零外部依赖（闸门）
+        shell: bash
+        run: node tools/check-payload-offline.mjs "$WWW_DIR"
+
+      - name: 壳的版本必须跟着 payload（闸门）
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.env.WWW_DIR + "/build.json","utf8")).game.app)')
+          CONF=$(node -e 'console.log(JSON.parse(require("fs").readFileSync("tauri/src-tauri/tauri.conf.json","utf8")).version)')
+          CARGO=$(node -e 'const s=require("fs").readFileSync("tauri/src-tauri/Cargo.toml","utf8");console.log(s.match(/^version = "([^"]+)"/m)[1])')
+          PKG=$(node -e 'console.log(JSON.parse(require("fs").readFileSync("tauri/package.json","utf8")).version)')
+          echo "payload=$APP conf=$CONF cargo=$CARGO npm=$PKG"
+          [ "$CONF" = "$APP" ] && [ "$CARGO" = "$APP" ] && [ "$PKG" = "$APP" ] || {
+            echo "闸门：Tauri 壳的版本（conf/Cargo/package.json）与 payload 的 game.app 不一致 —— 装出来的 exe 会显示错版本"; exit 1; }
+
+      - name: 图标（复用桌面壳那份，避免出现第二个真源）
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p tauri/src-tauri/icons
+          cp desktop/icon.ico tauri/src-tauri/icons/icon.ico
+          test -s tauri/src-tauri/icons/icon.ico
+
+      # Rust 那份静态服务是 desktop/serve.mjs 的手抄，规则错了不会有人发现（只有声音没了、或者首屏白屏），
+      # 所以先跑单元测试，再跑仓库里的 JS/Rust 双表对齐测试，两边都必须绿才允许往下打包。
+      - name: cargo test（回环服务的规则）
+        shell: bash
+        run: cd tauri/src-tauri && cargo test --release -- --nocapture
+
+      - name: 两个壳的表必须一致（闸门）
+        shell: bash
+        run: node --test test/tauri-parity.test.js
+
+      - name: 装 @tauri-apps/cli
+        working-directory: tauri
+        run: npm install
+
+      - name: 打 Tauri Windows 包（NSIS 安装器）
+        working-directory: tauri
+        run: npx tauri build --bundles nsis
+
+      - name: 校验产物
+        shell: bash
+        run: |
+          set -euo pipefail
+          find tauri/src-tauri/target/release/bundle -type f \( -name '*.exe' -o -name '*.msi' \) -printf '%s %p\n' | sort -rn | head -10 || true
+          SETUP=$(find tauri/src-tauri/target/release/bundle -type f -name '*.exe' | head -1)
+          [ -n "$SETUP" ] || { echo "没有打出 NSIS 安装器"; ls -R tauri/src-tauri/target/release/bundle | head -40; exit 1; }
+          echo "installer: $SETUP"
+          ls -lh "$SETUP"
+          # 目录版：exe + 同目录的 www/，玩家解压即用，启动不再有任何自解压
+          mkdir -p out/StrongholdProtocolTauri
+          cp tauri/src-tauri/target/release/stronghold-protocol-tauri.exe out/StrongholdProtocolTauri/StrongholdProtocolTauri.exe
+          cp -r "$WWW_DIR" out/StrongholdProtocolTauri/www
+          test -s out/StrongholdProtocolTauri/StrongholdProtocolTauri.exe
+          test -f out/StrongholdProtocolTauri/www/index.html
+          du -sh out/StrongholdProtocolTauri
+
+      # 出厂字节的零外链闸门：装在目录版里那份 www（与安装器打进去的是同一棵树）。
+      - name: 零外部依赖（产物内，闸门）
+        shell: bash
+        run: node tools/check-payload-offline.mjs out/StrongholdProtocolTauri/www
+
+      # 启动耗时：壳自己数"页面把 js/main.js 取走"用了多少毫秒。这条不是给人看的画面，是给流水线的数字，
+      # 所以窗口先不抬起来。runner 上没有 WebView2 时会失败 —— 那不能算产品坏了，故 continue-on-error。
+      - name: 启动探针（boot_probe 毫秒数）
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $env:SP_TAU_BOOT_PROBE = "1"
+          $env:SP_WWW = "out/StrongholdProtocolTauri/www"
+          $exe = "out/StrongholdProtocolTauri/StrongholdProtocolTauri.exe"
+          $p = Start-Process -FilePath $exe -PassThru -NoNewWindow -RedirectStandardOutput boot-probe.txt -RedirectStandardError boot-probe.err
+          if (-not $p.WaitForExit(90000)) { Stop-Process -Id $p.Id -Force; Write-Output "boot_probe: runner 上 90 秒没跑完" }
+          Get-Content boot-probe.txt, boot-probe.err -ErrorAction SilentlyContinue
+
+      - name: 收齐两种形态
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem -Recurse tauri/src-tauri/target/release/bundle -Filter *.exe | Select-Object -First 1
+          $ver = node -e "console.log(JSON.parse(require('fs').readFileSync('tauri/src-tauri/tauri.conf.json','utf8')).version)"
+          Copy-Item $setup.FullName "StrongholdProtocolTauri-$ver-setup.exe"
+          Push-Location out
+          7z a -mx=9 "..\StrongholdProtocolTauri-$ver-dir.zip" StrongholdProtocolTauri
+          Pop-Location
+          Get-ChildItem "StrongholdProtocolTauri-$ver-setup.exe","StrongholdProtocolTauri-$ver-dir.zip" |
+            Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,1)}}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stronghold-tauri-win
+          path: |
+            StrongholdProtocolTauri-*-setup.exe
+            StrongholdProtocolTauri-*-dir.zip
+          retention-days: 7

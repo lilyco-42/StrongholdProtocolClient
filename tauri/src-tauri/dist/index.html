@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="utf-8" />
+    <title>StrongholdProtocol</title>
+  </head>
+  <body>
+    <!--
+      这个占位页只用来满足 Tauri 的 frontendDist 要求：真正的界面由 main.rs 里那个只监听 127.0.0.1:47821 的
+      静态服务器提供，窗口加载的是 http://127.0.0.1:47821/（与 Electron 壳同一个 origin，localStorage 才对得上）。
+      任何时候都不该在包里看到这一页 —— 它没有可运行的东西。
+    -->
+    <p>此壳通过回环静态服务加载 payload；本页只是 frontendDist 的占位。</p>
+  </body>
+</html>

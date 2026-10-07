@@ -417,3 +417,34 @@ package.bat --portable                    # 桌面改出单文件便携 exe
 - 上游改了 `public/index.html`、`js/net.js`、`js/screens/room.js` 时补丁会先失败（这是设计好的报警）：按 §9 重新生成 `patches/game-client.patch` 再跑。
 - 缺 JDK 17+ / Android SDK 时脚本**跳过 APK 并继续**（只报一句警告）。本机实测可用 `C:\Program Files\Java\jdk-21` 与 `%LOCALAPPDATA%\Android\Sdk`，脚本会自己找。
 - Windows 下 zip 用系统自带的 `tar -a`（bsdtar）；想要更小就自己用 7-Zip 的 LZMA2（见 §4.1）。
+
+## 11. Tauri 壳（`tauri/`，另一条流水线 `build-tauri.yml`）
+
+玩家报的两条是**体积大**和**启动慢**，这两条各有各的账，得分开算：
+
+| 账 | 实测 | 归谁 |
+| --- | --- | --- |
+| 目录版解包后 | 1,145.4 MiB，其中 payload（素材+代码）825.4 MiB | **素材** —— 离线进对局不下载换来的 |
+| 同上，扣掉 payload | **320.0 MiB 是 Electron 自带的运行时** | 壳 —— Tauri 用系统 WebView2 替掉它 |
+| payload 自己的首屏 | 153 个请求 / **5.47 MiB** / 到标题页可点 438 ms | 与壳无关；0.2.0→0.2.1 只涨到 5.47 MiB（c21 是 5.46 MiB / 409 ms） |
+| `portable.exe` | 每次启动把整包自解压到临时目录（实测一个实例留下 **974 MB**） | 形态 —— 与 Electron/Tauri 都无关 |
+
+所以 Tauri 治的是那 320 MiB，治不了 825 MiB 的素材；启动慢的主因是**单文件自解压形态**，
+因此这条流水线**只出目录版与安装器，不出 portable**。
+
+壳的形态：`tauri/src-tauri/src/server.rs` 是一个 std 手写的只监听 `127.0.0.1:47821` 的静态服务器，
+窗口加载 `http://127.0.0.1:47821/` —— **故意与 Electron 壳用同一个 origin**：Chromium/WebView2 按 origin 划分
+localStorage，博士代号、干员调配、设置、记住的服务器全在里面，端口随机或改用 `tauri://localhost`
+都会让玩家以为存档丢了。端口被占时先认清"占它的是不是本游戏自己的页面"（`occupied_by_us`），
+是就退出而不是退到 47822 —— 那等于悄悄换了 origin。
+
+`server.rs` 是 `desktop/serve.mjs` 的手抄，所以有 `test/tauri-parity.test.js` 把两边的
+MIME 表、`/media` 扩展名**顺序**、长缓存目录集合、端口常量从**源码里各读一遍**再逐条比（抄错不会有人发现：
+`.skel` 的 Content-Type 错就是 Spine 静默不显示，`/media` 少一种扩展名就是全体静音）。
+Rust 侧的规则另有 `cargo test`（遍历、别名顺序、Range 钳制、ETag 与 `Date.toUTCString()` 逐字节一致）。
+两条都在 `build-tauri.yml` 里当闸门用，不绿不打包。
+
+`SP_TAU_BOOT_PROBE=1` 时窗口不抬起来，壳自己数"页面把 `js/main.js` 取走"用了多少毫秒并打印
+`boot_probe first_request_ms=… main_js_ms=… requests=…`，流水线里那一步就是拿它当启动耗时的证据
+（runner 上没有 WebView2 时会失败，所以那一步是 `continue-on-error`，不把它当成产品坏了）。
+

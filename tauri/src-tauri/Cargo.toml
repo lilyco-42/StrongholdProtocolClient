@@ -1,0 +1,21 @@
+[package]
+name = "stronghold-protocol-tauri"
+version = "0.2.1"
+description = "《卫戍协议：盟约》的 Tauri 壳（系统 WebView2，不再自带 Chromium）"
+edition = "2021"
+rust-version = "1.77"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+
+# 这个壳的存在理由就是省体积，所以发布构建按体积优先。
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

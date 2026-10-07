@@ -1,14 +1,41 @@
-# 用 GitHub Actions 出桌面版 / Android 版
+# 用 GitHub Actions 出桌面版 / Android / iOS 版
 
-## ✅ 验证结果（2026-10-04，run 37204756625）
+## 这条链现在长什么样（2026-10-08 重绘，别再照旧图跑）
 
-两个 job 全部成功，产物已下载校验：
+本文说明 `lilyco-42/StrongholdProtocolClient` 这条构建链：**payload 在本地从游戏仓 checkout 切出来 → 传成
+自己仓库的一个 `payload-*` Release 资产 → CI 只负责把它打成 exe / apk / ipa**。
+（旧版本这一节写的是"payload 在服务器上本地生成 → 传 OSS"：那是 0.1.x 的走法。OSS 因为欠费已经 403，
+现在也不从服务器切 payload —— 见 `docs/PACKAGING.md` 与下面的命令。）
 
-| 产物 | 大小 | 校验 |
+最近一次全绿是 `v0.2.1-c24`（三个 job 都过），产物大小是**逐个实测的**，别拿下面这些当"应该多大"的常量，
+读自己那次的：`gh api repos/lilyco-42/StrongholdProtocolClient/releases/tags/v0.2.1-c24 --jq '.assets[]|[.name,.size,.digest]|@tsv'`
+
+| 产物 | 大小（c24 实测） | 校验方式 |
 |---|---|---|
-| `stronghold-desktop-win` | **315.6 MB** | 4994 条目；`StrongholdProtocol.exe` ✓；`resources/app.asar` ✓；**4972 个内嵌 web 资源** ✓ |
-| `stronghold-android-apk` | **193.0 MB** | 4634 条目；`AndroidManifest.xml` / `classes.dex` / `resources.arsc` ✓；**4196 个内嵌 web 资源** ✓ |
+| `StrongholdProtocol-desktop-win-…-c24.zip` | **738,240,947 B** | 里面 `build\desktop\win-unpacked\resources\www` 与本地 payload **13,966 / 13,966 逐个一致**（0 缺 0 多 0 字节差）；`app.asar` 里 `"version": "0.2.1"` 1 次、`0.2.0` 0 次 |
+| `StrongholdProtocol-0.2.1-Setup.exe` / `-portable.exe` | **637,943,028 / 637,732,865 B** | 两者内层 `$PLUGINSDIR\app-64.7z` **同一个 sha256**（`63eab090…`），所以拆一次等于验两个形态 |
+| `Stronghold-…-c24-android-release.apk` | **629,208,646 B** | `assets/public/**` = payload + cordova 两个文件 + `js/runtime-config.js` 的别名开关；`AndroidManifest` 只有 0.2.1；**签名由两个读者确认**（CI `apksigner` 与本机 `tools/check-apk-signature.mjs`）都是 `f9da4576…` |
+| `Stronghold-…-c24-ios-unsigned.ipa` | **604,432,277 B** | `Payload/App.app/public/**` 同上；`Info.plist` 是二进制 plist，用 `plistlib` 读 → `CFBundleShortVersionString=0.2.1`、`CFBundleVersion=201` |
 
+三条比较命令都在 `_scratch/` 之外有一份可复用的：`node tools/check-payload-offline.mjs --zip <apk>`（产物内零外链）
+与 `node tools/check-apk-signature.mjs --expect "$(cat mobile/android/upload-key-sha256.txt)" <apk>`。
+
+## 每个 job 里的闸门（顺序有意义）
+
+1. `下载并解压 payload` → 文件数与大小；
+2. `校验 payload 完整性` → 四个关键文件在 + `assets` 文件数 > 3000；
+3. `校验 payload 版本（闸门）` → `expect_app` 必须等于 payload 的 `game.app`，并核 `server`；
+4. `payload 出处（闸门）` → `dirty:false` 且 describe 能追到 commit；
+5. `零外部依赖（闸门）` → 不许出现第三方字体主机 / CDN 绝对地址；
+6. android 独有：**`准备固定签名钥匙（release）`排在 2–5 之前**（secret 坏了一分钟就红，不用等 npm+gradle），
+   以及出货后的 **`APK 签名就是那一把钥匙（闸门）`** —— `apksigner verify --print-certs` 读产物里的证书，
+   与记在 `mobile/android/upload-key-sha256.txt` 里的那串指纹对拍（为什么必须有这道闸门：`docs/ANDROID-SIGNING.md`）；
+7. android/ios 独有：`__SP_MEDIA_ALIAS__ = false` 注入（Capacitor 是纯静态宿主，解不了 `/media` 别名）。
+
+## 历史快照（2026-10-04，run 37204756625 —— 数字已过时，只留作"闸门当初验过什么"的证据）
+
+两个 job 全部成功，产物已下载校验：`stronghold-desktop-win` 315.6 MB / 4994 条目、
+`stronghold-android-apk` 193.0 MB / 4634 条目（当时 4196 个内嵌 web 资源）。
 两者的 `runtime-config.js` 都是 `globalThis.__SP_SERVER__ = "sp.lain42.top"` ✓
 
 **注意：客户端的 `index.html` 里是 `/js/main.js`（本地路径），不是 OSS 地址。**
@@ -42,8 +69,6 @@
 
 GitHub Actions artifact 默认保留 **7 天**。要长期保存需另传（OSS / Release）。
 
-
-本文说明 `lilyco-42/StrongholdProtocolClient` 这条构建链：**payload 在服务器上本地生成 → 传 OSS → CI 只负责打包成 exe / apk**。
 
 ## 为什么不把 payload 生成放进 CI
 

@@ -519,3 +519,32 @@ c25 实测（`build-tauri.yml` run `37729406637`，全绿）：安装器 `Strong
 启动探针这次是 `first_request_ms=3132 main_js_ms=3217 requests=24` —— 与上一次的 9148/10107 差三倍，
 **只能说明共享 runner 的冷热水位不同，不能当"变快了"**；那一步现在是从 `continue-on-error` 改成的硬闸门，
 它同时是"去掉控制台之后 stdout 仍然可达"的唯一证据。
+
+## 16. c26：壳侧的四个优化（连接复用 / F12 / 单实例 / 端口挪走不再静默）
+
+payload 一个字节没动（还是 `payload-v0.2.1-c25` 那份 tar），所以这一版仍然只发 Tauri 一个资产，
+其它四个形态继续用 `v0.2.1-c24`。
+
+| 改了什么 | 为什么 | 实测 |
+| --- | --- | --- |
+| 静态服务改成按**连接**服务（keep-alive） | 每个回答都 `Connection: close` 是手抄漏的一条：Node 的 `http.Server` 白送连接复用。一局里几百个文件，在 Electron 上走 6 条 socket，在 Tauri 上就是几百次 TCP 连接 + 几百个 OS 线程，而日志只会显示"变慢了" | run `37770244660` 的启动探针：`requests=24 connections=6`（平均每条 4 个请求，正是 Chromium 对单源的 HTTP/1.1 连接上限）。c25 那次同一份 payload 也是 `requests=24`，当时没有 connections 这个字段，但按代码每个回答都关连接，那 24 个请求必然是 24 条连接 |
+| 续用连接时发 `Connection: keep-alive` + `Keep-Alive: timeout=5`，空闲超时也从 15 秒改成同一个 5 秒 | 我先写的断言是"Node 续用时不多发任何头"，那是**猜的**；真跑一遍 `desktop/serve.mjs`（同一条 socket 连发两问）才看到它发的就是这两行。parity 测试现在起 JS 那份服务实测、把 timeout 秒数从 Node 的头里抠出来再要求 Rust 源码里有同样的字面量 —— Node 改主意会先红，而不是两边各自漂 | `test/tauri-parity.test.js` 两条（结构 + 实测对照）；Rust 侧另有 3 条真跑 socket 的用例（一条连接拿两个回答 / 1.0 与 POST 之后确实断 / 416 之后连接仍可用），`cargo test` 在 Windows runner 上全绿 |
+| release 版打开 devtools（F12） | 玩家报"白屏 / 立绘没出来"时，有问题的只有那一台机器，而 release 壳没有控制台。Tauri 只在 debug 构建默认给 devtools | `tauri = { features = ["devtools"] }`；WebView2 自带检查器，所以安装器体积几乎不动（见下表）。**"按下去有没有面板"仍然只有装了的人能回答**，这条写在 Release 说明里请玩家回话 |
+| 单实例先看内核命名互斥量；端口真被挪走时弹一句 | 端口探针只看得见已经在服务的实例，看不见正在启动的实例 —— 两次双击挤在一起时第二个会退到 47822 开出一个新 origin；而换 origin 等于换 localStorage（代号/编队/设置都在里面） | 顺序钉在测试里：互斥量 → 端口探针 → 绑端口。15 秒那个旧空闲值也被断言禁掉，防止回退 |
+
+大小账（三个形态的安装器都来自同一份 payload，所以差的是壳自己的字节）：
+
+| Release | Tauri 安装器 | 与上一版差 |
+| --- | --- | --- |
+| `v0.2.1-c24`（`StrongholdProtocolTauri-0.2.1-setup.exe`） | 549,072,012 B | — |
+| `tauri-v0.2.1-c25` | 549,073,131 B | +1,119 B（那两个 shell JS 文件） |
+| `tauri-v0.2.1-c26`（`…-c26-setup.exe`，sha256 `214ac4b5…`） | 549,072,683 B | −448 B |
+
+发布这一版时顺手修了一个玩家可见的配置错误：`gh release create` 默认会把新 Release 标成 **Latest**，
+于是 c25 那个"只有一个资产"的 Release 抢走了本该属于 `v0.2.1-c24`（五个形态）的 Latest 标签 ——
+仓库页的"最新.release"点进去只剩 Tauri 安装器。已 `gh release edit v0.2.1-c24 --latest=true` 改回，
+c26 起用 `--latest=false` 创建，并且每次发完都要用 `gh release list` 看一眼标签在哪
+（`gh release view --json` 根本没有 `isLatest` 字段，查不了）。
+
+没做的两条也记在这儿：**F11 全屏**仍然只在 Electron 的原生层有（要页面能调壳的能力，等于必须重切 payload，
+见任务里的说明）；第二次双击仍然只提示、不把已开的窗口抬到前面（那需要跨进程喊话 + 一次主线程调用）。

@@ -22,3 +22,4 @@ deploy/** text eol=lf
 *.der binary
 *.p12 binary
 *.rs text eol=lf
+*.yml  text eol=lf

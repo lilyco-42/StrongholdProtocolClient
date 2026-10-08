@@ -1,0 +1,111 @@
+name: probe-art-engines
+
+# 把「发布出去的产物里那套静态资源，在真实浏览器引擎里能不能加载」变成一条能重跑的测量。
+#
+# 起因（玩家反馈，2026-10-08）：iPhone 上「ipa 没有立绘，只显示了干员头像」。先用只读脚本把
+# 「文件没打进包」这条排掉：ipa 与 apk 的 web 根是同一批 13,968 个文件，`data/assets.json` 里
+# 9,855 个 URL 在包内**逐大小写**都能命中，立绘就是普通 8-bit RGBA PNG（180×360，115 KB）。
+# 剩下的嫌疑人全在运行期：WebKit 的图像加载、`loading="lazy"`、Capacitor 的自定义 scheme、
+# 手机内存。本机没有 WebKit，所以这条流水线在 CI 里下载**已发布的 ipa**，解出 web 根，用
+# tools/art-probe-check.mjs 让 chromium 与 webkit 各自把同一批文件按四种方式加载一遍并对照。
+#
+# 输出（探测结果-art-probe）：art-probe-chromium.json / art-probe-webkit.json —— 每个 URL、每种方式、
+# 事件序列、naturalWidth、fetch 的 status/type/bytes。
+#
+# 退出码：0 = webkit 与 chromium 表现一致；1 = 复现了（打印具体 URL）；2 = 探测本身不成立
+# （阳性/阴性对照没通过、引擎起不来、解包失败）。三种情况必须在日志里一眼能分辨。
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: '从哪个已发布 Release 取产物（探测的对象是发出去的东西，不是仓库里的源码）'
+        required: true
+        default: 'v0.2.1-c24'
+      asset:
+        description: '资产文件名（ipa / apk / 桌面 zip 都行，web_subpath 要跟着改）'
+        required: true
+        default: 'Stronghold-0.2.1-c24-ios-unsigned.ipa'
+      web_subpath:
+        description: '压缩包里 web 根的路径：ipa=Payload/App.app/public，apk=assets/public'
+        required: true
+        default: 'Payload/App.app/public'
+      engines:
+        description: '逗号分隔，第一个是参照引擎（必须全通过，否则判定为探测本身有问题）'
+        required: false
+        default: 'chromium,webkit'
+      per_group:
+        description: '每组美术取几个样本（按声明尺寸从大到小）'
+        required: false
+        default: '2'
+
+env:
+  NODE_VERSION: '22'
+
+concurrency:
+  group: probe-art-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  engines:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: 下载要探测的产物
+        env:
+          TAG: ${{ inputs.release_tag }}
+          ASSET: ${{ inputs.asset }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/dl"
+          gh release download "$TAG" -D "$RUNNER_TEMP/dl" -p "$ASSET"
+          ls -l "$RUNNER_TEMP/dl"
+          sha256sum "$RUNNER_TEMP/dl/$ASSET"
+
+      - name: 解出 web 根（按产物里的文件数验收，不看退出码）
+        env:
+          ASSET: ${{ inputs.asset }}
+          WEB: ${{ inputs.web_subpath }}
+        run: |
+          set -euo pipefail
+          rm -rf stage && mkdir -p stage
+          unzip -q "$RUNNER_TEMP/dl/$ASSET" -d stage
+          test -f "stage/$WEB/data/assets.json"
+          test -f "stage/$WEB/js/ui/gameComponents.js"
+          mv "stage/$WEB" stage/web
+          COUNT=$(find stage/web -type f | wc -l)
+          echo "解出 $COUNT 个文件，$(du -sh stage/web | cut -f1)"
+          # 解包这一步最坏的失败是"安静地解出 0 个文件"，所以数量本身就是闸门。
+          test "$COUNT" -gt 1000
+
+      - name: 装 Playwright 与两个引擎
+        run: |
+          set -euo pipefail
+          npm i -D playwright
+          npx playwright install --with-deps chromium webkit
+
+      - name: 两个引擎各加载一遍同一批美术（对照）
+        id: probe
+        env:
+          ENGINES: ${{ inputs.engines }}
+          PER_GROUP: ${{ inputs.per_group }}
+        run: |
+          set -euo pipefail
+          node tools/art-probe-check.mjs --root stage/web --out art-probe --engines "$ENGINES" --per-group "$PER_GROUP"
+
+      - name: 打包探测结果
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 探测结果-art-probe
+          path: |
+            art-probe/*.json
+            stage/web/build.json
+          if-no-files-found: warn
+          retention-days: 30

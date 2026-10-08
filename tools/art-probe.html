@@ -1,0 +1,173 @@
+<!doctype html>
+<!--
+  In-browser half of the art probe (tools/art-probe.mjs serves it, tools/art-probe-check.mjs drives it).
+
+  It loads the shipped art several different ways and reports what the engine did, so the iPhone report
+  「ipa 没有立绘，只显示了干员头像」 can be answered with a measurement instead of a guess:
+
+    eager     plain <img>, in view                              — can this engine decode these bytes at all?
+    lazy      <img loading="lazy">, in view — the attribute js/ui/gameComponents.js:68 puts on every sprite
+    scrolled  lazy, appended out of view inside a scroller, then scrolled in — is lazy honoured there?
+    rerender  the element is dropped 30 ms after its load starts and a fresh one takes the same URL —
+              does the *cancelled* load fire `error`? If it does, `Img`'s `bad === src` latch turns a
+              cancelled load into a permanent fallback, which is exactly an avatar where a portrait belongs.
+
+  The last case is a URL that does not exist and it must fail; that is what makes the other rows mean
+  something. The driver reads window.__ART_PROBE__ and compares engines case by case.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>art probe</title>
+  <style>
+    body { font: 12px/1.45 ui-monospace, monospace; background: #0c0f0e; color: #cfe7dd; margin: 0; padding: 8px; }
+    pre { white-space: pre-wrap; max-height: 40vh; overflow: auto; }
+    /* Everything that receives an <img> stays inside the viewport, or "lazy" would be a test of geometry
+       rather than of the engine. #stage only shows the most recent sprite; #scroller holds a tall document so
+       the scrolled case really starts out of view. */
+    #stage { position: fixed; right: 8px; bottom: 8px; width: 240px; height: 200px; overflow: hidden; border: 1px solid #2b4a3f; }
+    #scroller { position: fixed; left: 8px; bottom: 8px; width: 200px; height: 120px; overflow: auto; border: 1px solid #2b4a3f; }
+    #spacer { height: 4000px; }
+    #deep { border-top: 1px dashed #2b4a3f; min-height: 40px; }
+    #stage img, #deep img { display: block; }
+  </style>
+</head>
+<body>
+  <pre id="log">starting…</pre>
+  <div id="stage"></div>
+  <div id="scroller"><div id="spacer"></div><div id="deep"></div></div>
+  <script>
+    const log = (s) => { document.getElementById('log').textContent = s; };
+    const stage = document.getElementById('stage');
+    const scroller = document.getElementById('scroller');
+    const deep = document.getElementById('deep');
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    const TIMEOUT_IMG = 15000;
+    const TIMEOUT_CANCELLED = 2000;
+
+    /** One <img>, one outcome. `events` is every event the engine actually fired, in order. */
+    function loadOnce({ url, lazy = false, parent = stage, dropAfter = 0, timeout = TIMEOUT_IMG }) {
+      return new Promise((resolve) => {
+        const img = document.createElement('img');
+        const events = [];
+        let settled = false;
+        const finish = (r) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve({ ...r, events, w: img.naturalWidth, h: img.naturalHeight, complete: img.complete });
+        };
+        img.addEventListener('load', () => { events.push('load'); finish({ ok: true }); });
+        img.addEventListener('error', () => { events.push('error'); finish({ ok: false, why: 'error-event' }); });
+        if (lazy) img.loading = 'lazy';
+        parent.appendChild(img);
+        if (dropAfter) setTimeout(() => { img.remove(); }, dropAfter);
+        img.src = url;
+        const timer = setTimeout(() => finish({ ok: false, why: 'timeout' }), timeout);
+      });
+    }
+
+    /**
+     * The re-render case: a second element for the same URL replaces the first while it is still loading.
+     * `droppedErrored` is the finding — an engine that reports `error` for a load it merely cancelled hands
+     * `Img` a permanent fallback, and the player sees the avatar instead of the portrait.
+     */
+    async function rerender(url) {
+      const dropped = loadOnce({ url, lazy: true, dropAfter: 30, timeout: TIMEOUT_CANCELLED });
+      await sleep(30);
+      const survivor = loadOnce({ url, lazy: true });
+      const [d, s] = [await dropped, await survivor];
+      return { droppedEvents: d.events, droppedErrored: d.events.includes('error'), survivedOk: s.ok, survivedW: s.w };
+    }
+
+    /** lazy + appended out of view, then scrolled in. Reports whether the load waited for the scroll. */
+    async function scrolled(url) {
+      const img = document.createElement('img');
+      img.loading = 'lazy';
+      const events = [];
+      let settled = null;
+      const p = new Promise((res) => {
+        img.addEventListener('load', () => { events.push('load'); res(true); });
+        img.addEventListener('error', () => { events.push('error'); res(false); });
+      });
+      deep.appendChild(img);
+      img.src = url;
+      await sleep(400);
+      const loadedWhileHidden = events.length > 0;
+      scroller.scrollTop = 4000;
+      const raced = await Promise.race([p.then((v) => (v ? 'load' : 'error')), sleep(6000).then(() => 'timeout')]);
+      scroller.scrollTop = 0;
+      settled = raced;
+      deep.textContent = '';
+      return { ok: settled === 'load', outcome: settled, loadedWhileHidden, events, w: img.naturalWidth };
+    }
+
+    async function fetchProbe(url) {
+      try {
+        const r = await fetch(url, { cache: 'no-store' });
+        const buf = await r.arrayBuffer();
+        return { ok: r.ok, status: r.status, type: r.headers.get('content-type') || '', bytes: buf.byteLength };
+      } catch (e) {
+        return { ok: false, status: 0, type: '', bytes: 0, why: String((e && e.message) || e) };
+      }
+    }
+
+    window.__ART_PROBE__ = { done: false, fatal: null, ua: navigator.userAgent, startedAt: Date.now() };
+
+    (async () => {
+      const start = window.__ART_PROBE__.startedAt;
+      let cases;
+      try {
+        cases = (await (await fetch('/__art_cases__.json', { cache: 'no-store' })).json()).cases;
+      } catch (e) {
+        window.__ART_PROBE__ = { done: true, fatal: 'no case list: ' + e.message, ua: navigator.userAgent };
+        log('fatal: ' + e.message);
+        return;
+      }
+      // the expensive case runs on the two groups the report is about, plus the control
+      const rerenderGroups = new Set(['chars.portrait', 'chars.avatar', '__control__']);
+      const results = [];
+      let n = 0;
+      for (const c of cases) {
+        const row = { group: c.group, id: c.id, url: c.url, px: c.px };
+        row.fetch = await fetchProbe(c.url);
+        row.eager = await loadOnce({ url: c.url });
+        row.lazy = await loadOnce({ url: c.url, lazy: true });
+        row.scrolled = await scrolled(c.url);
+        if (rerenderGroups.has(c.group)) row.rerender = await rerender(c.url);
+        stage.textContent = '';
+        results.push(row);
+        log(`${++n}/${cases.length} ${c.group} eager=${row.eager.ok ? 'ok' : 'FAIL ' + (row.eager.why || '')} lazy=${row.lazy.ok ? 'ok' : 'FAIL'} scrolled=${row.scrolled.ok ? 'ok' : 'FAIL'}`);
+      }
+      const groups = {};
+      for (const r of results) {
+        const g = groups[r.group] || (groups[r.group] = { total: 0, fetch: 0, eager: 0, lazy: 0, scrolled: 0, rerendered: 0, droppedErrored: 0 });
+        g.total++;
+        if (r.fetch.ok) g.fetch++;
+        if (r.eager.ok) g.eager++;
+        if (r.lazy.ok) g.lazy++;
+        if (r.scrolled.ok) g.scrolled++;
+        if (r.rerender) {
+          g.rerendered++;
+          if (r.rerender.droppedErrored) g.droppedErrored++;
+        }
+      }
+      window.__ART_PROBE__ = {
+        done: true,
+        fatal: null,
+        ua: navigator.userAgent,
+        ms: Date.now() - start,
+        caseCount: results.length,
+        groups,
+        results,
+      };
+      log(`done: ${results.length} cases in ${window.__ART_PROBE__.ms} ms`);
+    })().catch((e) => {
+      window.__ART_PROBE__ = { done: true, fatal: String((e && e.stack) || e), ua: navigator.userAgent };
+      log('fatal: ' + String((e && e.message) || e));
+    });
+  </script>
+</body>
+</html>

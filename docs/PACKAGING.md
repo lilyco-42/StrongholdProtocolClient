@@ -465,6 +465,32 @@ Rust 侧的规则另有 `cargo test`（遍历、别名顺序、Range 钳制、ET
 
 内容侧这一轮也逐个对过：`StrongholdProtocolTauri-0.2.1-dir.zip` 里 `StrongholdProtocolTauri/www/**`
 与本地 payload **13,966 / 13,966 一致（0 缺 0 多 0 字节差）**，和 Electron 目录版是同一标准。
-CI 侧另有两道：`cargo test`（遍历/别名顺序/Range 钳制/日期格式）+ `test/tauri-parity.test.js`（两张表从两边源码各读一遍再比），
-以及对**产物内 www** 再跑一次零外链闸门。
+CI 侧另有三道：`cargo test`（遍历/别名顺序/Range 钳制/日期格式）+ `test/tauri-parity.test.js`
+（两张表从两边源码各读一遍再比）+ 对**产物内 www** 再跑一次零外链闸门。
 
+## 12. c25：壳自己的两条真机反馈（黑控制台 + F2）
+
+玩家自己装了 Tauri 版，报了两条，都是壳的问题，与游戏内容无关 —— 所以这一版**只重发 Tauri 那一个资产**
+（Release `tauri-v0.2.1-c25`），Electron / apk / ipa 继续用 `v0.2.1-c24` 那五个，不让人白重下 3.5 GB。
+
+| 症状 | 根因 | 修法 |
+| --- | --- | --- |
+| 启动时多一个黑色控制台，里面是 `[tauri] 静态服务 port=47821 root=…` | Rust 二进制默认是 **console 子系统**，`main.rs` 没有 `windows_subsystem` 属性 | `#![cfg_attr(all(not(debug_assertions), not(test)), windows_subsystem = "windows")]`。少了 `not(test)` 会连 `cargo test --release` 的日志一起关掉 |
+| 按 F2 没反应 | F2/F5/F11/F12 只在 **Electron 壳的原生层**实现（`desktop/main.mjs` 的 `before-input-event`），Tauri 一条都没有，网页版也没有 | 改成页面级：规则进 `picker-core.js` 的 `isPickerHotkey`（只有不带修饰键、非连发的 F2 算），接线进 `picker.js`。Electron 那条原生路径保留（它先 `preventDefault`，所以不会重复触发；`showPicker()` 也幂等） |
+
+两个连带点，别漏：
+
+1. **没有控制台之后，启动失败就没人看得见**。所以致命错误改弹原生消息框（对齐 Electron 的
+   `dialog.showErrorBox`）；`MessageBoxW` 用 `#[link(name = "user32")]` 直接声明，不为此引入 windows 绑定 crate。
+   "47821 上已经是我们自己的页面"那一支单独走**信息框 + exit(0)**，它不是故障。
+   **CI 的探针模式（`SP_TAU_BOOT_PROBE`）绝不弹框** —— 模态框会把那一步挂到超时。
+2. **`picker.js` / `picker-core.js` 是逐字复制进 payload 的**，所以 F2 这一条必须重切 payload（c25）。
+   这也是为什么"只修壳"仍然产生了一个新的 payload 标签。
+
+c25 实测（`build-tauri.yml` run `37729406637`，全绿）：安装器 `StrongholdProtocolTauri-0.2.1-c25-setup.exe`
+= **549,073,131 B**（比 c24 那份多 1,119 B，就是那两个 JS 文件的差）；目录版 zip 598,018,637 B，
+里面 `www/**` 与 payload 13,966/13,966 一致；**从安装器里取出** `www/js/shell/picker.js`、
+`picker-core.js`、`build.json` 三个文件，sha256 与本地树逐个相等，F2 接线在里面。
+启动探针这次是 `first_request_ms=3132 main_js_ms=3217 requests=24` —— 与上一次的 9148/10107 差三倍，
+**只能说明共享 runner 的冷热水位不同，不能当"变快了"**；那一步现在是从 `continue-on-error` 改成的硬闸门，
+它同时是"去掉控制台之后 stdout 仍然可达"的唯一证据。

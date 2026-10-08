@@ -201,8 +201,11 @@ jobs:
           $req = [int]$m.Groups[1].Value
           $con = [int]$m.Groups[2].Value
           Write-Output "连接复用：$req 个请求 / $con 条连接"
-          if ($con -ge $req) {
-            Write-Output "闸门：$req 个请求用了 $con 条连接，等于每个请求一条 —— keep-alive 没生效"
+          # 阈值留了两倍余量，而不是 con < req：浏览器会投机地多开几条空 socket（HTTP/1.1 每个源最多 6 条），
+          # 探针打印的那一刻可能"连接多、请求少"，用 con<req 会把好构建判死。
+          # 而退回"一个连接一个请求"时比值必然 1:1，这条照样红 —— 那才是它要防的东西。
+          if ($con * 2 -gt $req) {
+            Write-Output "闸门：$req 个请求用了 $con 条连接（平均每条不到 2 个）—— 连接复用退化或没生效"
             exit 1
           }
 

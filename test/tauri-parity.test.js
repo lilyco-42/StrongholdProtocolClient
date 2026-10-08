@@ -240,7 +240,7 @@ test('the boot probe prints connections, so "the page reused its sockets" is a n
   for (let i = from + 1; i < lines.length; i++) if (/^\s*- name: /.test(lines[i])) { to = i; break; }
   const step = lines.slice(from, to).join('\n');
   assert.match(step, /requests=\(\\d\+\) connections=\(\\d\+\)/, '探针步骤要按两个数去解析');
-  assert.match(step, /if \(\$con -ge \$req\)/, '连接数不少于请求数时必须红 —— 那说明没复用');
+  assert.match(step, /if \(\$con \* 2 -gt \$req\)/, '平均每条连接不到 2 个请求时必须红 —— 那说明没复用');
 });
 
 // 玩家报"白屏 / 立绘没出来"时，出问题的只有那一台机器，而 release 壳没有控制台。

@@ -21,3 +21,4 @@ deploy/** text eol=lf
 *.jar binary
 *.der binary
 *.p12 binary
+*.rs text eol=lf

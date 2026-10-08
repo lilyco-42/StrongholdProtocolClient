@@ -69,12 +69,15 @@ fn popup(msg: &str, icon: u32) {
 }
 
 /// 直接声明 `MessageBoxW`，不为此加一个 windows 绑定的 crate（`#[link]` 让链接器去找 user32.lib）。
+/// extern 块放在模块顶层：`#[link]` 写在函数体里虽然通常也认，但没必要赌。
+#[cfg(windows)]
+#[link(name = "user32")]
+extern "system" {
+    fn MessageBoxW(hwnd: *mut core::ffi::c_void, text: *const u16, caption: *const u16, utype: u32) -> i32;
+}
+
 #[cfg(windows)]
 fn message_box(msg: &str, icon: u32) {
-    #[link(name = "user32")]
-    extern "system" {
-        fn MessageBoxW(hwnd: *mut core::ffi::c_void, text: *const u16, caption: *const u16, utype: u32) -> i32;
-    }
     let wide = |s: &str| -> Vec<u16> { s.encode_utf16().chain(std::iter::once(0)).collect() };
     let text = wide(msg);
     let caption = wide("卫戍协议：盟约");

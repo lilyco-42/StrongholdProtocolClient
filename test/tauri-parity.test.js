@@ -259,7 +259,7 @@ test('a second launch is caught by a kernel object before the port is bound', ()
   assert.match(main, /const ERROR_ALREADY_EXISTS: u32 = 183;/);
   const mutex = main.indexOf('if already_running()');
   const probe = main.indexOf('if occupied_by_us()?');
-  const bind = main.indexOf('server::spawn_server(');
+  const bind = main.indexOf('server::spawn_server_with(');
   assert.ok(mutex > 0 && mutex < probe && probe < bind, '必须是 互斥量 → 端口探针 → 绑端口');
 
   // 端口被挪走时不许静默：那等于换 origin，代号/编队/设置在这个窗口里就是空的

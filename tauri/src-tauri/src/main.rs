@@ -17,11 +17,75 @@
 
 mod server;
 
-use server::ServeStats;
+use server::{ServeStats, ShellCommand};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use tauri::Manager;
+
+/// 页面 → 壳的唯一一条命令通道（F11 全屏，见 `server::SHELL_FULLSCREEN_PATH`）。
+///
+/// 为什么是个槽而不是直接把 `AppHandle` 交给服务：端口就是 origin，静态服务必须**在窗口之前**绑好端口才能把
+/// 端口写进窗口地址；而 `AppHandle` 要到 `setup()` 才存在。填好之前收到的请求答 503，玩家那边看到的是
+/// `__SP_F11_STATE__ = 'sent:503'`，与"切成功了"的 `sent:200` 不是一回事。
+#[derive(Clone)]
+struct ShellSlot(Arc<Mutex<Option<tauri::AppHandle>>>);
+
+impl ShellSlot {
+    fn new() -> Self {
+        Self(Arc::new(Mutex::new(None)))
+    }
+    fn fill(&self, handle: tauri::AppHandle) {
+        if let Ok(mut g) = self.0.lock() {
+            *g = Some(handle);
+        }
+    }
+}
+
+impl ShellCommand for ShellSlot {
+    /// 窗口操作只能在事件循环那根线程上做，所以这里把动作递过去、再**等它回话**：
+    /// 答 `fullscreen=on|off` 而不是 `accepted`，页面与 CI 日志才分得清"命令排上了队"和"窗口真的变了"。
+    /// 等不到（主线程正忙）就回 pending —— 超时是上限，绝不会把这条连接挂死。
+    fn run(&self, cmd: &str) -> String {
+        if cmd != "fullscreen" {
+            return format!("unknown={cmd}");
+        }
+        // `run_on_main_thread(&self, ...)` borrows the handle while the closure needs to own one, so the closure
+        // gets its own clone — moving `handle` into the argument would be a borrow conflict (E0505).
+        let handle = match self.0.lock().ok().and_then(|g| (*g).clone()) {
+            Some(h) => h,
+            None => return "fullscreen=pending".to_string(),
+        };
+        let for_thread = handle.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        if handle
+            .run_on_main_thread(move || {
+                let outcome = match for_thread.get_webview_window("main") {
+                    Some(w) => match w.is_fullscreen() {
+                        Ok(before) => {
+                            let want = !before;
+                            match w.set_fullscreen(want) {
+                                Ok(()) => if want { "on" } else { "off" },
+                                Err(_) => "error",
+                            }
+                        }
+                        Err(_) => "unreadable",
+                    },
+                    None => "no-window",
+                };
+                let _ = tx.send(outcome);
+            })
+            .is_err()
+        {
+            return "fullscreen=rejected".to_string();
+        }
+        match rx.recv_timeout(std::time::Duration::from_millis(500)) {
+            Ok(o) => format!("fullscreen={o}"),
+            Err(_) => "fullscreen=pending".to_string(),
+        }
+    }
+}
 
 /// 认出"47821 上已经是我们自己的页面"的记号。
 const ORIGIN_MARKER: &str = "卫戍协议";
@@ -149,7 +213,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let stats = Arc::new(ServeStats::default());
-    let (port, _thread) = server::spawn_server(www.clone(), Arc::clone(&stats))?;
+    let shell = ShellSlot::new();
+    let (port, _thread) = server::spawn_server_with(www.clone(), Arc::clone(&stats), Some(Arc::new(shell.clone())))?;
     // 端口挪走了就等于换了 origin，而 localStorage 是按 origin 存的：这件事必须说出来，不能让玩家自己发现"存档没了"。
     if port != server::DEFAULT_PORT {
         eprintln!("[tauri] 端口 {} 被占，改用 {port}", server::DEFAULT_PORT);
@@ -170,9 +235,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let probe_for_setup = probe;
     let stats_for_setup = Arc::clone(&stats);
     let url_for_setup = url.clone();
+    let shell_for_setup = shell;
 
     let app = tauri::Builder::default()
         .setup(move |app| {
+            // 窗口有了，才把 AppHandle 交给静态服务那条线：在此之前 `/__shell__/fullscreen` 答 503。
+            shell_for_setup.fill(app.handle().clone());
             let parsed: tauri::Url = url_for_setup
                 .parse()
                 .map_err(|e| format!("窗口地址不合法 {url_for_setup}: {e}"))?;
@@ -188,11 +256,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
             if probe_for_setup {
                 let s = Arc::clone(&stats_for_setup);
+                let sh = shell_for_setup.clone();
                 std::thread::spawn(move || {
                     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(45);
                     while std::time::Instant::now() < deadline {
                         let entry = s.entry_ms.load(Ordering::Relaxed);
                         if entry > 0 {
+                            // CI 里没有键盘，所以这一段只问真窗口：命令通道 ↔ 真实窗口之间是这条流水线能证明的部分。
+                            // keydown → fetch 那一段由 test/picker.test.js 的源码钉加跨语言路由名比对负责。
+                            // 切两次：既看得见 on 也看得见 off，并且结束时回到原样。
+                            let first = sh.run("fullscreen");
+                            let second = sh.run("fullscreen");
+                            println!("fullscreen_probe first={first} second={second}");
                             println!(
                                 "boot_probe first_request_ms={} main_js_ms={} requests={} connections={}",
                                 s.first_ms.load(Ordering::Relaxed),

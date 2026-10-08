@@ -25,8 +25,8 @@
 import { toHttpUrl, toWsUrl } from '../net.js';
 import {
   BUILTIN_SERVERS, COMMUNITY_SERVERS, K_AUTOSTART, K_CHOSEN, K_LIST, K_SEED, K_SERVER, NAME_MAX, SEED_VERSION,
-  addressError, ambiguousScheme, autostartOn, cleanName, customFrom, isAndroidUA, isPickerHotkey, missingSeeds, orderCandidates,
-  pathOf, probeReason, rootWsUrl, serverName, shouldShowPicker,
+  addressError, ambiguousScheme, autostartOn, cleanName, customFrom, isAndroidUA, isFullscreenHotkey, isPickerHotkey, missingSeeds, orderCandidates,
+  pathOf, probeReason, rootWsUrl, serverName, shellFullscreenUrl, shouldShowPicker,
 } from './picker-core.js';
 
 const PROBE_TIMEOUT_MS = 4000;
@@ -637,12 +637,33 @@ seedCommunityServers();
 if (shouldShowPicker({ forced, chosenThisSession, savedAddress, autostart })) showPicker();
 
 /**
- * F2 = "换个服务器"，在页面里听。Electron 壳本来就在原生层拦了它（`desktop/main.mjs` 的
- * `before-input-event` + `preventDefault()`），所以那边根本不会走到这一行；而 **Tauri 壳没有任何原生快捷键**
- * （F2/F5/F11/F12 一个都没实现），网页版也没有 —— 玩家按 F2 什么都不会发生。放在这里就三端同一份实现。
+ * F2 = "换个服务器"，F11 = 全屏，都在页面里听。Electron 壳本来就在原生层拦了这两个（`desktop/main.mjs` 的
+ * `before-input-event` + `preventDefault()`），所以那边根本不会走到这一行；网页版两者都有浏览器自己的 F11；
+ * 而 **Tauri 壳没有任何原生快捷键** —— 玩家按 F11 什么都不会发生。放在这里就三端同一份实现。
  * `showPicker()` 自身是幂等的（已经开着就什么都不做），所以即便哪天两个处理器同时收到也不会叠两层。
+ *
+ * 全屏只走壳，不走 `requestFullscreen()`：HTML5 全屏在 WebView2 里只铺满客户区，标题栏和任务栏都还在，
+ * 而 Electron 那边的 `setFullScreen()` 是真全屏 —— 两边按 F11 得到不同的东西比两边都没有更糟。壳这一侧是
+ * `tauri/src-tauri/src/server.rs` 的 `POST /__shell__/fullscreen`（同一个进程里的静态服务直接把动作递给窗口），
+ * 所以端口挪到哪个也一样能用，而且只开放这一个动作。
+ * `__SP_F11_STATE__` 是给 CI 的开动探针读的：这一串状态能分辨"根本没按键传来""页面不在壳里""命令发了但壳没答"
+ * 三种不同的"按了没反应"。
  */
+globalThis.__SP_F11_STATE__ = 'idle';
 globalThis.addEventListener?.('keydown', (ev) => {
+  if (isFullscreenHotkey(ev.key, ev.repeat, ev)) {
+    const url = shellFullscreenUrl(globalThis.location?.hostname);
+    if (!url) {
+      globalThis.__SP_F11_STATE__ = 'no-shell';
+      return;
+    }
+    ev.preventDefault();
+    globalThis.__SP_F11_STATE__ = 'sending';
+    fetch(url, { method: 'POST', cache: 'no-store' })
+      .then((res) => { globalThis.__SP_F11_STATE__ = `sent:${res.status}`; })
+      .catch((e) => { globalThis.__SP_F11_STATE__ = `error:${(e && (e.message || String(e))) || '未知'}`.slice(0, 160); });
+    return;
+  }
   if (!isPickerHotkey(ev.key, ev.repeat, ev)) return;
   ev.preventDefault();
   showPicker();

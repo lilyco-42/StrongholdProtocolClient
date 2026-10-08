@@ -26,6 +26,21 @@ pub const DEFAULT_PORT: u16 = 47821;
 pub const PORT_SEARCH: u16 = 16;
 
 pub const MEDIA_PREFIX: &str = "/media/";
+/// The one command the page is allowed to ask the shell to run (F11 全屏).
+///
+/// It is a route on the page's **own** origin rather than a Tauri JS API call for two measured reasons: a
+/// capability that exposes `getCurrentWindow().setFullscreen()` has to name the origin, and this shell serves the
+/// page from whichever loopback port it got (47821 plus a 16-port search, then an OS-picked one) — so the allowlist
+/// would silently stop working exactly for the player whose ports were all busy, while granting the whole window
+/// API. The server lives in the same process as the window, so a request to it reaches the window on any port and
+/// exposes one action.
+pub const SHELL_FULLSCREEN_PATH: &str = "/__shell__/fullscreen";
+
+/// Runs a shell command and describes the result (`fullscreen=on` / `fullscreen=off` / an error note).
+/// Implementations must not block: this is called on the connection's thread, inside the request.
+pub trait ShellCommand: Send + Sync {
+    fn run(&self, cmd: &str) -> String;
+}
 /// Order matters: it is the order the JS server probes, and `test/tauri-parity.test.js` pins it.
 pub const AUDIO_EXTS: [&str; 7] = [".mp3", ".m4a", ".aac", ".ogg", ".oga", ".opus", ".wav"];
 const AUDIO_ROOT: [&str; 2] = ["assets", "audio"];
@@ -334,7 +349,13 @@ impl Req {
 /// keeps HTTP/1.1 connections alive, and the game asks for hundreds of files during a match. Answering one request
 /// per socket meant this shell paid a TCP connect plus a fresh OS thread for every PNG, while the other shell paid
 /// about six of each for the same page.
-fn serve_connection(mut sock: TcpStream, root: &Path, stats: &Arc<ServeStats>, t0: std::time::Instant) {
+fn serve_connection(
+    mut sock: TcpStream,
+    root: &Path,
+    stats: &Arc<ServeStats>,
+    shell: &Option<Arc<dyn ShellCommand>>,
+    t0: std::time::Instant,
+) {
     stats.connections.fetch_add(1, Ordering::Relaxed);
     // 5 s idle, not 15: measured off `desktop/serve.mjs` on 2026-10-08, Node answers the first request with
     // `Connection: keep-alive` + `Keep-Alive: timeout=5` and its keepAliveTimeout is 5 s. Same number here means the
@@ -378,7 +399,7 @@ fn serve_connection(mut sock: TcpStream, root: &Path, stats: &Arc<ServeStats>, t
             version: parts.next().unwrap_or("HTTP/1.0").to_string(),
             headers,
         };
-        match handle_request(&mut sock, root, stats, t0, &req) {
+        match handle_request(&mut sock, root, stats, shell, t0, &req) {
             Ok(true) => continue,
             Ok(false) | Err(_) => return,
         }
@@ -390,6 +411,7 @@ fn handle_request(
     sock: &mut TcpStream,
     root: &Path,
     stats: &Arc<ServeStats>,
+    shell: &Option<Arc<dyn ShellCommand>>,
     t0: std::time::Instant,
     req: &Req,
 ) -> std::io::Result<bool> {
@@ -416,6 +438,28 @@ fn handle_request(
         if cur == 0 {
             stats.entry_ms.store(t0.elapsed().as_millis() as u64, Ordering::Relaxed);
         }
+    }
+
+    // The shell command is the one POST this server takes, so it is matched before the method gate. Answering 503
+    // while the window is still being built is deliberate: `picker.js` puts the status into `__SP_F11_STATE__`, and
+    // `sent:503` vs `sent:200` is the difference between "the shell never got round to it" and "the shell ran it".
+    if split_query(raw_url).0 == SHELL_FULLSCREEN_PATH {
+        if method != "POST" {
+            let _ = write_plain(sock, "405 Method Not Allowed", "method not allowed", "Allow: POST");
+            return Ok(false);
+        }
+        match shell {
+            Some(s) => {
+                let body = s.run("fullscreen");
+                let _ = write_plain(sock, "200 OK", &body, "Cache-Control: no-store\r\n");
+            }
+            None => {
+                let _ = write_plain(sock, "503 Service Unavailable", "fullscreen=unavailable", "Cache-Control: no-store\r\n");
+            }
+        }
+        // Closing is not laziness: a POST may carry a body we never read, and leaving it on the socket would
+        // desynchronise whatever came next — the same reason the 405 path above ends the connection.
+        return Ok(false);
     }
 
     if method != "GET" && method != "HEAD" {
@@ -568,6 +612,15 @@ fn write_plain(sock: &mut TcpStream, status: &str, body: &str, extra: &str) -> s
 /// Bind and serve on a background thread. Returns the bound port (the caller builds the window URL from it, and the
 /// whole point of pinning is that the page's origin — and therefore its localStorage — stays put across launches).
 pub fn spawn_server(root: PathBuf, stats: Arc<ServeStats>) -> std::io::Result<(u16, thread::JoinHandle<()>)> {
+    spawn_server_with(root, stats, None)
+}
+
+/// `spawn_server` plus the shell command handler (the Tauri `main` passes one; tests pass a recording fake).
+pub fn spawn_server_with(
+    root: PathBuf,
+    stats: Arc<ServeStats>,
+    shell: Option<Arc<dyn ShellCommand>>,
+) -> std::io::Result<(u16, thread::JoinHandle<()>)> {
     let mut listener: Option<TcpListener> = None;
     if DEFAULT_PORT <= u16::MAX - PORT_SEARCH {
         for i in 0..PORT_SEARCH {
@@ -591,7 +644,8 @@ pub fn spawn_server(root: PathBuf, stats: Arc<ServeStats>) -> std::io::Result<(u
         for sock in l.incoming().flatten() {
             let root = root.clone();
             let stats = Arc::clone(&stats);
-            thread::spawn(move || serve_connection(sock, &root, &stats, t0));
+            let shell = shell.clone();
+            thread::spawn(move || serve_connection(sock, &root, &stats, &shell, t0));
         }
     });
     Ok((port, h))
@@ -819,6 +873,68 @@ mod tests {
         ask(&mut s, "GET /a.html HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
         let again = read_until(&mut s, "AAAAAAAA");
         assert!(again.contains("200 OK"), "416 之后连接上的下一个请求读不到自己的正文：{again:?}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 假壳：记下页面问了什么。这一半测的是路由与 HTTP 细节，不是真窗口（真窗口只有 CI 那台机器上有）。
+    struct FakeShell {
+        calls: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl ShellCommand for FakeShell {
+        fn run(&self, cmd: &str) -> String {
+            if let Ok(mut v) = self.calls.lock() {
+                v.push(cmd.to_string());
+            }
+            "fullscreen=on".to_string()
+        }
+    }
+
+    #[test]
+    fn the_shell_command_route_is_the_one_post_this_server_takes() {
+        let root = sandbox("shellcmd");
+        fs::write(root.join("index.html"), "<html>ok</html>").unwrap();
+        let stats = Arc::new(ServeStats::default());
+        let shell = Arc::new(FakeShell { calls: std::sync::Mutex::new(Vec::new()) });
+        let handler: Arc<dyn ShellCommand> = shell.clone();
+        let (port, _h) = spawn_server_with(root.clone(), Arc::clone(&stats), Some(handler)).unwrap();
+
+        let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(5))).ok();
+        ask(&mut s, &format!("POST {} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\n\r\n", SHELL_FULLSCREEN_PATH));
+        let got = read_until(&mut s, "fullscreen=on");
+        assert!(got.contains("200 OK"), "命令路由没答 200：{got:?}");
+        assert!(got.contains("Cache-Control: no-store"), "命令响应不许缓存：{got:?}");
+        // 比 `Vec<String>` 与 `Vec<String>`：`&[String]` 与数组字面量之间的 PartialEq 是实现里挑类型的写法，
+        // 不值得为它赌一次 CI。
+        let calls = shell.calls.lock().unwrap().clone();
+        assert_eq!(calls, vec!["fullscreen".to_string()], "页面给的命令名没传到壳里");
+
+        // 只认 POST：GET 走到这里必须被挡住，否则这条路径就落回文件查找，行为随文件名变化而不可预期。
+        let mut g = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        g.set_read_timeout(Some(Duration::from_secs(5))).ok();
+        ask(&mut g, &format!("GET {} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n", SHELL_FULLSCREEN_PATH));
+        let rejected = read_until(&mut g, "405");
+        assert!(rejected.contains("405 Method Not Allowed"), "GET 该被拒：{rejected:?}");
+        assert!(rejected.contains("Allow: POST"), "拒绝时要说清用什么方法：{rejected:?}");
+        assert_eq!(shell.calls.lock().unwrap().len(), 1, "被拒的请求不许执行命令");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 窗口还没建好（`setup()` 之前）时这一条必须是 503，而不是 200：页面的 `__SP_F11_STATE__` 靠状态码分辨
+    /// "壳没接住" 与 "壳切好了"，把没做的事答成成功就是又造一个假「已同步」。
+    #[test]
+    fn the_shell_command_reports_unavailable_when_no_handler_is_installed() {
+        let root = sandbox("shellcmd-none");
+        fs::write(root.join("index.html"), "<html>ok</html>").unwrap();
+        let stats = Arc::new(ServeStats::default());
+        let (port, _h) = spawn_server(root.clone(), Arc::clone(&stats)).unwrap();
+        let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(5))).ok();
+        ask(&mut s, &format!("POST {} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\n\r\n", SHELL_FULLSCREEN_PATH));
+        let got = read_until(&mut s, "503");
+        assert!(got.contains("503 Service Unavailable"), "没有壳处理器时该答 503：{got:?}");
+        assert!(got.contains("fullscreen=unavailable"), "正文要说清为什么：{got:?}");
         let _ = fs::remove_dir_all(&root);
     }
 }

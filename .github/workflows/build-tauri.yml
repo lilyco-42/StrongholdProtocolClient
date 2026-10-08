@@ -191,6 +191,25 @@ jobs:
             exit 1
           }
           Write-Output "启动探针 OK：$($hit.Line)"
+          # F11 全屏（任务 #64）：CI 里没有键盘，所以由壳自己去问真窗口切不切得动 —— 这条证明的是
+          # "命令通道 ↔ 窗口"那一段；"keydown → fetch"那一段由 test/picker.test.js 的源码钉与跨语言路由名
+          # 比对负责。缺行 = 壳不再报 = 红（和 boot_probe 同一个道理：只当装饰的日志等于没有）。
+          $fs = Select-String -Path boot-probe.txt -Pattern 'fullscreen_probe first=(\S+) second=(\S+)' -ErrorAction SilentlyContinue
+          if (-not $fs) {
+            Write-Output "闸门：boot-probe.txt 里没有 fullscreen_probe 行 —— 壳的命令通道没跑起来，或 stdout 又不流到重定向了"
+            exit 1
+          }
+          $fa = $fs.Matches[0].Groups[1].Value
+          $fb = $fs.Matches[0].Groups[2].Value
+          Write-Output "全屏通道：first=$fa second=$fb"
+          # pending / rejected / unavailable / no-window 都是"话没说到窗口那里"；on/off/error/unreadable 才是
+          # 窗口自己答的话（error 留着看得见，说明 Tauri 那层的调用变了 —— 那是另一个问题，不是这条通道坏了）。
+          foreach ($v in @($fa, $fb)) {
+            if ($v -match 'pending|rejected|unavailable|no-window|unknown') {
+              Write-Output "闸门：全屏返回 $v —— 命令没能排到主线程上"
+              exit 1
+            }
+          }
           # 连接复用是这一版的优化本身，所以它也必须是道闸门：页面取了几十个文件，就必须只用几条 TCP 连接。
           # 退回"一个连接一个请求"时这行仍然会打印出来，只看"有没有 boot_probe 行"是抓不住的。
           $m = [regex]::Match($hit.Line, 'requests=(\d+) connections=(\d+)')

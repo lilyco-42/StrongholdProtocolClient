@@ -10,8 +10,8 @@ import { readFileSync } from 'node:fs';
 
 import {
   BUILTIN_SERVERS, COMMUNITY_SERVERS, K_AUTOSTART, K_CHOSEN, K_LIST, K_SEED, K_SERVER, NAME_MAX, SEED_VERSION,
-  addressError, ambiguousScheme, autostartOn, cleanName, customFrom, isAndroidUA, isPickerHotkey, missingSeeds, orderCandidates,
-  otherScheme, pathOf, probeReason, rootWsUrl, serverName, shouldShowPicker,
+  addressError, ambiguousScheme, autostartOn, cleanName, customFrom, isAndroidUA, isFullscreenHotkey, isPickerHotkey, missingSeeds, orderCandidates,
+  otherScheme, pathOf, probeReason, rootWsUrl, serverName, shellFullscreenUrl, shouldShowPicker,
 } from '../shell/picker-core.js';
 // `picker.js` deduplicates seeds with `js/net.js`'s `toWsUrl`; `tools/ws-url.mjs` is the pinned copy of it
 // (test/ws-url.test.js), so using it here is the same key the shipped picker computes.
@@ -323,5 +323,59 @@ describe('the F2 hotkey', () => {
     // Electron 那条原生路径必须还在：它 preventDefault 了，页面这条才不会被重复触发。
     const main = readFileSync(new URL('../desktop/main.mjs', import.meta.url), 'utf8');
     assert.match(main, /key === 'f2'[\s\S]{0,80}showServerPicker/, 'desktop/main.mjs 仍要在原生层处理 F2（Electron 的键盘事件先给它）');
+  });
+});
+
+// F11 = 全屏。Electron 壳早就在原生层做了（desktop/main.mjs:168 `win.setFullScreen()`），网页版有浏览器自己的
+// F11，只有 Tauri 壳两头都没有 —— 2026-10-08 记录在任务 #64。走壳而不是 `requestFullscreen()`：HTML5 全屏在
+// WebView2 里只铺满客户区，标题栏与任务栏都还在，那和 Electron 那边按同一个键得到的东西不是同一个东西。
+describe('the F11 hotkey', () => {
+  test('only a bare, non-repeated F11 counts', () => {
+    assert.equal(isFullscreenHotkey('F11', false, {}), true);
+    assert.equal(isFullscreenHotkey('F11', true, {}), false, '按住不放会连发 repeat，全屏不许来回抖');
+    assert.equal(isFullscreenHotkey('f11', false, {}), false, 'KeyboardEvent.key 是 "F11"');
+    assert.equal(isFullscreenHotkey('F12', false, {}), false, 'F12 是 devtools，不归这条规则管');
+    assert.equal(isFullscreenHotkey(), false, '没有事件也不该炸');
+    for (const mods of [{ ctrlKey: true }, { altKey: true }, { metaKey: true }, { shiftKey: true }]) {
+      assert.equal(isFullscreenHotkey('F11', false, mods), false, `带修饰键的 F11 是别人的快捷键：${JSON.stringify(mods)}`);
+    }
+  });
+
+  test('只有壳自己（环回地址）有这条命令可问', () => {
+    assert.equal(shellFullscreenUrl('127.0.0.1'), '/__shell__/fullscreen');
+    assert.equal(shellFullscreenUrl('localhost'), '/__shell__/fullscreen');
+    assert.equal(shellFullscreenUrl('[::1]'), '/__shell__/fullscreen', 'IPv6 字面量在 hostname 里带方括号');
+    assert.equal(shellFullscreenUrl('LOCALHOST'), '/__shell__/fullscreen', '主机名大小写不敏感');
+    // 其它主机上没有这个路由：那是别人的服务器，按一次键就发一个 404 请求过去是纯粹的噪音。
+    for (const host of ['sp.lain42.top', 'wei.linxia.dev', '103.205.253.194', '192.168.1.9', '']) {
+      assert.equal(shellFullscreenUrl(host), null, `${host} 不是壳，不该发请求`);
+    }
+    assert.equal(shellFullscreenUrl(), null, '没有 location 也不该炸');
+  });
+
+  test('页面这一侧确实接到了那条路由', () => {
+    const src = readFileSync(new URL('../shell/picker.js', import.meta.url), 'utf8')
+      .split('\n').filter((l) => !/^\s*(?:\/\/|\*)/.test(l)).join('\n');
+    assert.match(src, /isFullscreenHotkey\(\s*ev\.key,\s*ev\.repeat,\s*ev\s*\)/, '判断走 picker-core 的规则');
+    assert.match(src, /shellFullscreenUrl\(globalThis\.location\?\.hostname\)/, '只有环回才问壳');
+    assert.match(src, /fetch\(url,\s*\{\s*method:\s*'POST',\s*cache:\s*'no-store'\s*\}\)/, '命令用 POST，且不许被缓存');
+    assert.match(src, /__SP_F11_STATE__/, '状态要留在页面上，CI 的开动探针才读得到"按了没反应"是哪一种');
+    // Electron 的原生 F11 必须还在：它 preventDefault 之后页面这条才不会被同一个键触发两次。
+    const main = readFileSync(new URL('../desktop/main.mjs', import.meta.url), 'utf8');
+    assert.match(main, /key === 'f11'[\s\S]{0,80}setFullScreen/, 'desktop/main.mjs 仍要在原生层处理 F11');
+  });
+
+  test('JS 与 Rust 对这条路由的名字必须逐字一致', () => {
+    // 两边各写一遍字符串，错一个字符的症状是"按 F11 没反应"，而两套测试都会绿 —— 所以跨语言钉一次。
+    const want = shellFullscreenUrl('127.0.0.1');
+    const rs = readFileSync(new URL('../tauri/src-tauri/src/server.rs', import.meta.url), 'utf8');
+    const m = /SHELL_FULLSCREEN_PATH: &str = "([^"]+)"/.exec(rs);
+    assert.ok(m, 'server.rs 里要有 SHELL_FULLSCREEN_PATH 常量');
+    assert.equal(m[1], want, `路由名字对不上：Rust 是 ${m[1]}，页面问的是 ${want}`);
+    // 处理器必须真的装上了：路由在、没人处理，等于 503 永远不回 200。
+    const mainRs = readFileSync(new URL('../tauri/src-tauri/src/main.rs', import.meta.url), 'utf8');
+    assert.match(mainRs, /spawn_server_with\([\s\S]{0,120}Some\(Arc::new\(shell\.clone\(\)\)\)/, '启动时把壳处理器交给静态服务');
+    assert.match(mainRs, /shell_for_setup\.fill\(app\.handle\(\)\.clone\(\)\)/, '窗口建好才填 AppHandle（填之前答 503）');
+    assert.match(mainRs, /run_on_main_thread/, '窗口操作必须在事件循环那根线程上做');
   });
 });

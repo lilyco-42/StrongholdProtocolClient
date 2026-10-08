@@ -546,8 +546,9 @@ payload 一个字节没动（还是 `payload-v0.2.1-c25` 那份 tar），所以�
 c26 起用 `--latest=false` 创建，并且每次发完都要用 `gh release list` 看一眼标签在哪
 （`gh release view --json` 根本没有 `isLatest` 字段，查不了）。
 
-没做的两条也记在这儿：**F11 全屏**仍然只在 Electron 的原生层有（要页面能调壳的能力，等于必须重切 payload，
-见任务里的说明）；第二次双击仍然只提示、不把已开的窗口抬到前面（那需要跨进程喊话 + 一次主线程调用）。
+没做的两条也记在这儿：**F11 全屏**当时仍然只在 Electron 的原生层有（要页面能调壳的能力，等于必须重切 payload，
+见任务里的说明）—— 这一条已在 §18 实现，但 `picker.js` 是逐字复制进 payload 的，所以要随下一次重切（c27）才到玩家
+手里；第二次双击仍然只提示、不把已开的窗口抬到前面（那需要跨进程喊话 + 一次主线程调用）。
 
 ## 17. 网友服复测：门槛是 `hello`→`welcome`，而且要两个出口
 
@@ -603,3 +604,39 @@ gh workflow run probe-servers.yml -R lilyco-42/StrongholdProtocolClient --ref ma
 `missingSeeds`），而它原来是对补丁里那段代码的改写版 —— 改写版把不带端口的 `[::1]` 归一成 `wss://`，补丁里的代码
 给出 `ws://`。`test/ws-url.test.js` 从 `patches/game-client.patch` 重新抽出新增行、逐个函数按文本比对，再让两份
 实现跑同一批输入对答案；`test/picker.test.js` 另外钉住"没有两行种子归一成同一个 socket URL"。
+
+## 18. F11 全屏：页面 → 壳的一条命令路由（任务 #64）
+
+Electron 壳早就有 F11（`desktop/main.mjs:168` 在 `before-input-event` 里 `win.setFullScreen()` 再 `preventDefault()`），
+网页版有浏览器自己的 F11，只有 Tauri 壳两头都没实现 —— 玩家按下去什么都不会发生。
+
+**为什么不走 HTML5 全屏**：`document.documentElement.requestFullscreen()` 在 WebView2 里只铺满客户区，标题栏和
+任务栏都还在（宿主得响应 `ContainsFullScreenElementChanged` 才会真的全屏，而 wry 不响应）。那样两个壳按同一个键
+得到两种不同的东西，比"另一个没有"更糟。
+
+**为什么不走 Tauri 的 JS 窗口 API**：capability 要按 **origin** 授权，而这个壳的 origin 是"它抢到的那个环回端口"
+（47821 起、连找 16 个、都不行就交给系统）。写成 allowlist 的后果是端口被占满的那名玩家静默失去 F11，
+而且换到的是整个窗口 API 的权限，不是一件事。
+
+所以走的是**页面自己 origin 上的一条路由**：`POST /__shell__/fullscreen`。静态服务与窗口在同一个进程里，
+`server.rs` 收到就通过 `run_on_main_thread` 把动作递给窗口（窗口操作只能在事件循环那根线程做），并**等它回话**
+再答 —— 响应正文是 `fullscreen=on|off|error|…`，不是 `accepted`，这样"命令排上了队"与"窗口真的变了"在日志里
+是两种话。窗口还没建好时答 503：`picker.js` 把状态码记进 `globalThis.__SP_F11_STATE__`，于是
+`sending / sent:200 / sent:503 / no-shell` 四种"按了没反应"互相能分辨。
+
+页面这一侧只在**环回主机**上问（`shellFullscreenUrl()`）：其它主机上没有这条路由，往别人的服务器发一个 404 请求
+是纯噪音。命令名两边各写一遍字符串会静默错开 —— 症状就是"按了没反应"而两套测试都绿，所以
+`test/picker.test.js` 里有一条跨语言钉：从 `server.rs` 里正则取出 `SHELL_FULLSCREEN_PATH`，与
+`shellFullscreenUrl('127.0.0.1')` 逐字比。
+
+CI 能证明与不能证明的，说清楚：
+
+| 段 | 谁证明 |
+|---|---|
+| 路由 ↔ 命令名 ↔ 状态码 | `server.rs` 的三个测试（`FakeShell` 记命令名、GET 被 405 拒、没有处理器时 503） |
+| JS 与 Rust 的路由字符串一致 | `test/picker.test.js` 跨语言比对 |
+| 命令通道 ↔ **真实窗口** | `build-tauri.yml` 的启动探针：CI 里没有键盘，所以壳自己调两次，打印 `fullscreen_probe first=… second=…`，缺行或答 `pending/rejected/unavailable/no-window` 都判红 |
+| 真实按键 F11 → 页面收到 keydown | **没有人能证明**：Windows runner 上没有人手按键，而合成 `KeyboardEvent` 只能证明我自己的处理器，不能证明 WebView2 会把 F11 送进页面。要这条得真机按一次 |
+
+这条也因此必须**随 payload 重切**才生效：`picker.js` 是逐字复制进 payload 的。壳这一侧（路由 + 窗口调用）单独发
+上去也不会亮，两边要在同一个 c27 里。

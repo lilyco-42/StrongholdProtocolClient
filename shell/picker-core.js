@@ -253,3 +253,39 @@ export function isPickerHotkey(key, repeat, mods) {
   if (key !== 'F2' || repeat) return false;
   return !(mods && (mods.ctrlKey || mods.altKey || mods.metaKey || mods.shiftKey));
 }
+
+/**
+ * F11 = 全屏. Same reason `isPickerHotkey` lives here: the Electron shell already intercepts F11 natively
+ * (`desktop/main.mjs` `before-input-event` → `win.setFullScreen()`), so the page never sees it there; a browser has
+ * its own F11; only the Tauri shell has nothing. One rule, and the repeat/modifier cases are the part that goes
+ * wrong silently — holding F11 must not thrash fullscreen.
+ * @param {string} [key] `KeyboardEvent.key`
+ * @param {boolean} [repeat] `KeyboardEvent.repeat`
+ * @param {{ctrlKey?: boolean, altKey?: boolean, metaKey?: boolean, shiftKey?: boolean}} [mods]
+ */
+export function isFullscreenHotkey(key, repeat, mods) {
+  if (key !== 'F11' || repeat) return false;
+  return !(mods && (mods.ctrlKey || mods.altKey || mods.metaKey || mods.shiftKey));
+}
+
+/**
+ * The shell's own fullscreen command endpoint, or `null` when this page is not served by a shell.
+ *
+ * Why a request to *our own origin* instead of `window.__TAURI__.window.getCurrentWindow().setFullscreen()`:
+ * a capability that grants the JS window API has to name the page's origin, and this shell serves the page from
+ * whichever loopback port it got (47821 plus a 16-port search, then whatever the OS hands out) — so an allowlist
+ * would silently stop working for the rare player whose ports were all busy, and it would grant the whole window
+ * API rather than one action. The static server is in the same process as the window, so a POST to it reaches the
+ * window directly, on any port, and exposes exactly one thing.
+ *
+ * Gated to loopback hosts because everywhere else there is nothing to ask: Electron swallows F11 in its own
+ * `before-input-event` (the page never sees the key), and a browser has its own F11 — firing a request at a fan
+ * server that has no such route would be noise on someone else's box for zero effect.
+ * @param {string} [hostname] `location.hostname`
+ * @returns {string|null}
+ */
+export function shellFullscreenUrl(hostname) {
+  const h = String(hostname ?? '').toLowerCase().replace(/^\[|\]$/g, '');
+  if (h !== '127.0.0.1' && h !== 'localhost' && h !== '::1') return null;
+  return '/__shell__/fullscreen';
+}

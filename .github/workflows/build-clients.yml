@@ -63,7 +63,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for f in index.html js/runtime-config.js js/shell/picker.js js/net.js; do
+          for f in index.html js/runtime-config.js js/shell/picker.js js/net.js dev/spine-probe.html dev/spine-probe.js; do
             test -f "build/client/www/$f" || { echo "缺 $f"; exit 1; }
           done
           ASSETS=$(find build/client/www/assets -type f 2>/dev/null | wc -l)
@@ -215,7 +215,7 @@ jobs:
       - name: 校验 payload 完整性
         run: |
           set -euo pipefail
-          for f in index.html js/runtime-config.js js/shell/picker.js js/net.js; do
+          for f in index.html js/runtime-config.js js/shell/picker.js js/net.js dev/spine-probe.html dev/spine-probe.js; do
             test -f "build/client/www/$f" || { echo "缺 $f"; exit 1; }
           done
           ASSETS=$(find build/client/www/assets -type f 2>/dev/null | wc -l)
@@ -348,7 +348,7 @@ jobs:
       - name: 校验 payload 完整性
         run: |
           set -euo pipefail
-          for f in index.html js/runtime-config.js js/shell/picker.js js/net.js; do
+          for f in index.html js/runtime-config.js js/shell/picker.js js/net.js dev/spine-probe.html dev/spine-probe.js; do
             test -f "build/client/www/$f" || { echo "缺 $f"; exit 1; }
           done
           ASSETS=$(find build/client/www/assets -type f 2>/dev/null | wc -l)

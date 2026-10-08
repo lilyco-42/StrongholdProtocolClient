@@ -365,6 +365,19 @@ describe('the F11 hotkey', () => {
     assert.match(main, /key === 'f11'[\s\S]{0,80}setFullScreen/, 'desktop/main.mjs 仍要在原生层处理 F11');
   });
 
+  test('自检页在选择页上有入口，而且那个页面真的会打进 payload', () => {
+    const src = readFileSync(new URL('../shell/picker.js', import.meta.url), 'utf8')
+      .split('\n').filter((l) => !/^\s*(?:\/\/|\*)/.test(l)).join('\n');
+    assert.match(src, /id="sp-selftest"/, '多人页要有一个能点的自检按钮 —— 玩家点不到的诊断页等于没有');
+    assert.match(src, /querySelector\('#sp-selftest'\)[\s\S]{0,60}location\.href = '\/dev\/spine-probe\.html'/,
+      '按钮必须真的接线（只加 markup 不加 listener 是这个 UI 最容易犯的错）');
+    // 路径是绝对 `/dev/…`：三端 origin 各不相同（capacitor://localhost、https://localhost、127.0.0.1:<抢到的端口>）
+    assert.doesNotMatch(src, /location\.origin \+ '\/dev\/spine-probe/, '拼 origin 是多余的，而且桌面壳端口会挪');
+    const wf = readFileSync(new URL('../.github/workflows/build-clients.yml', import.meta.url), 'utf8');
+    assert.match(wf, /for f in [^"\n]*dev\/spine-probe\.html/,
+      'CI 的 payload 完整性检查必须收这一页：按钮链到一个不存在的页面，比没有按钮更糟');
+  });
+
   test('JS 与 Rust 对这条路由的名字必须逐字一致', () => {
     // 两边各写一遍字符串，错一个字符的症状是"按 F11 没反应"，而两套测试都会绿 —— 所以跨语言钉一次。
     const want = shellFullscreenUrl('127.0.0.1');

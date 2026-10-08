@@ -841,8 +841,26 @@ describe('payload offline gate (no third-party host in the boot path)', () => {
         writeFileSync(path.join(root, 'webfonts', 'google', path.basename(u)), 'wOF2');
       }
     }
-    writeFileSync(path.join(root, 'data', 'assets.json'),
-      JSON.stringify(o.cdn ? { bgm: 'https://dl.lain42.top/site/assets/audio/x.mp3' } : { bgm: 'assets/audio/x.mp3' }));
+    // Art manifests and the files they promise. Three references, all satisfiable, because the point of this
+    // gate is that a broken reference is named (see artReferenceProblems): the case variant below is the one
+    // a Windows packaging machine cannot see with existsSync.
+    const ART_FILES = ['assets/char/avatar/c1.png', 'assets/char/portrait/c1_1.png', 'assets/local/map/board.png'];
+    writeFileSync(path.join(root, 'data', 'assets.json'), JSON.stringify(o.cdn
+      ? { chars: { c1: { avatar: '/assets/char/avatar/c1.png', portrait: '/assets/char/portrait/c1_1.png' } }, bgm: 'https://dl.lain42.top/site/assets/audio/x.mp3' }
+      : { chars: { c1: { avatar: '/assets/char/avatar/c1.png', portrait: '/assets/char/portrait/c1_1.png' } }, bgm: 'assets/audio/x.mp3' }));
+    writeFileSync(path.join(root, 'data', 'local-assets.json'),
+      JSON.stringify({ groups: { map: { board: { path: '/assets/local/map/board.png', w: 64, h: 64 } } } }));
+    if (!o.noArtManifest) {
+      for (const rel of ART_FILES) {
+        if (Array.isArray(o.dropArt) && o.dropArt.includes(rel)) continue;
+        const onDisk = (o.caseArt && o.caseArt[rel]) || rel;
+        mkdirSync(path.dirname(path.join(root, onDisk)), { recursive: true });
+        writeFileSync(path.join(root, onDisk), 'PNG');
+      }
+    } else {
+      rmSync(path.join(root, 'data', 'assets.json'), { force: true });
+      rmSync(path.join(root, 'data', 'local-assets.json'), { force: true });
+    }
     return root;
   };
   const cleanup = [];
@@ -877,6 +895,43 @@ describe('payload offline gate (no third-party host in the boot path)', () => {
   test('a payload without the mirror sheet fails', () => {
     const r = checkPayloadOffline(make({ dropSheet: true }));
     assert.match(r.problems.join('\n'), /缺自托管字体表/);
+  });
+
+  // The 立绘 question in one line: the shipped tree has to contain every file the art manifests name, compared
+  // case-exactly, because a packaged iOS app and the Linux web host both 404 on a name that only differs in case
+  // while the Windows machine that built them cannot see the difference. docs/IOS-ART.md.
+  test('the art manifests are counted, and a satisfied reference list is green', () => {
+    const r = checkPayloadOffline(make());
+    assert.equal(r.art.checked, 2, 'both manifests read');
+    assert.equal(r.art.refs, 3);
+    assert.deepEqual(r.problems, []);
+  });
+
+  test('a portrait named by the manifest but absent from the payload is called out', () => {
+    const r = checkPayloadOffline(make({ dropArt: ['assets/char/portrait/c1_1.png'] }));
+    const text = r.problems.join('\n');
+    assert.match(text, /data\/assets\.json: \d+ 个 URL 里 1 个在 payload 里找不到/);
+    assert.match(text, /assets\/char\/portrait\/c1_1\.png/);
+    assert.ok(!/只差大小写/.test(text), 'a plain absence is not reported as a case error');
+  });
+
+  test('a name that only differs in case is caught where existsSync is blind', () => {
+    const root = make({ caseArt: { 'assets/char/portrait/c1_1.png': 'assets/char/portrait/C1_1.png' } });
+    // Whether the wrong-case path opens here is a property of this filesystem, not of the check, so it is
+    // recorded rather than asserted — the part that must hold everywhere is that the gate names the case error.
+    const wrongCaseOpens = existsSync(path.join(root, 'assets', 'char', 'portrait', 'c1_1.png'));
+    console.log(`  本机文件系统${wrongCaseOpens ? '不分' : '分'}大小写：existsSync ${wrongCaseOpens ? '看不出' : '看得出'}这个错`);
+    const r = checkPayloadOffline(root);
+    const text = r.problems.join('\n');
+    assert.match(text, /其中 1 个只差大小写/);
+    assert.match(text, /清单要 assets\/char\/portrait\/c1_1\.png，盘上是 assets\/char\/portrait\/C1_1\.png/);
+  });
+
+  test('a tree without the art manifests is not held to them', () => {
+    const r = checkPayloadOffline(make({ noArtManifest: true }));
+    assert.equal(r.art.checked, 0);
+    assert.equal(r.art.refs, 0);
+    assert.ok(!r.problems.some((p) => /美术清单/.test(p)), JSON.stringify(r.problems));
   });
 
   test('a directory that is not a payload is refused, not silently passed', () => {

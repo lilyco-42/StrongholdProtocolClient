@@ -52,6 +52,57 @@ export const OUTBOUND = [
 export const TEXT_EXT = new Set(['.html', '.css', '.js', '.mjs', '.json', '.svg', '.txt', '.atlas', '.csv']);
 export const SHEET = 'webfonts/google/google.css';
 export const MIN_SLICES = 100;
+/** The two manifests whose URLs the client actually puts into an `<img>`. */
+export const ART_MANIFESTS = ['data/assets.json', 'data/local-assets.json'];
+
+/**
+ * Every URL the art manifests promise must be in the payload, case-exactly.
+ *
+ * Why this belongs to the offline gate rather than to a bug report: on 2026-10-08 an iPhone player sent
+ * 「ipa 没有立绘，只显示了干员头像」. Reading the published bundle showed the shipped tree is complete —
+ * 9,855 URLs in `data/assets.json` and 1,475 in `data/local-assets.json`, every one of them present in the ipa
+ * (and in the apk, byte-for-byte the same 13,968 files) — so the report was NOT a packaging hole. This is the
+ * check that decides that in thirty seconds instead of in a support thread, and it is case-exact on purpose:
+ * `existsSync` on the Windows packaging machine cannot see a name that differs only in case, while an iOS
+ * bundle and the Linux web host both 404 on it (the same trap as the font mirror above).
+ * @param {(rel: string) => string} read
+ * @param {(rel: string) => boolean} exists
+ * @param {string[]} allFiles every entry relative to the payload root
+ * @returns {{ problems: string[], checked: number, refs: number }}
+ */
+export function artReferenceProblems(read, exists, allFiles) {
+  const exact = new Set(allFiles);
+  const byLower = new Map();
+  for (const f of allFiles) {
+    const k = f.toLowerCase();
+    if (!byLower.has(k)) byLower.set(k, f);
+  }
+  const problems = [];
+  let refs = 0;
+  let checked = 0;
+  for (const rel of ART_MANIFESTS) {
+    if (!exists(rel)) continue; // a tree without the art manifests has nothing to promise; not this gate's business
+    checked++;
+    let m;
+    try { m = JSON.parse(read(rel)); } catch (e) { problems.push(`${rel} 解析不了：${e.message}`); continue; }
+    const urls = [];
+    const walk = (v) => {
+      if (typeof v === 'string') { if (v.startsWith('/')) urls.push(v.slice(1)); return; }
+      if (Array.isArray(v)) { for (const x of v) walk(x); return; }
+      if (v && typeof v === 'object') { for (const x of Object.values(v)) walk(x); }
+    };
+    walk(m);
+    refs += urls.length;
+    const missing = urls.filter((u) => !exact.has(u));
+    if (!missing.length) continue;
+    problems.push(`${rel}: ${urls.length} 个 URL 里 ${missing.length} 个在 payload 里找不到，例如 ${missing[0]}`);
+    const caseOnly = missing.filter((u) => byLower.has(u.toLowerCase()));
+    if (caseOnly.length) {
+      problems.push(`其中 ${caseOnly.length} 个只差大小写（清单要 ${caseOnly[0]}，盘上是 ${byLower.get(caseOnly[0].toLowerCase())}）—— Windows 上看着没事，手机与网页版是 404`);
+    }
+  }
+  return { problems, checked, refs };
+}
 
 function collectProblems(read, exists, listDir, listSheetUrls, mirrorNames) {
   const problems = [];
@@ -68,9 +119,12 @@ function collectProblems(read, exists, listDir, listSheetUrls, mirrorNames) {
     }
   }
 
+  const art = artReferenceProblems(read, exists, listDir());
+  problems.push(...art.problems);
+
   if (!exists(SHEET)) {
     problems.push(`缺自托管字体表 ${SHEET} —— 镜像没进产物？`);
-    return { files: files.length, woff2: 0, slices: 0, problems };
+    return { files: files.length, woff2: 0, slices: 0, art, problems };
   }
   const sheet = read(SHEET);
   const urls = [...new Set(sheet.match(/url\(\/webfonts\/google\/[^)]+\.woff2\)/g) || [])];
@@ -96,7 +150,7 @@ function collectProblems(read, exists, listDir, listSheetUrls, mirrorNames) {
   }
   const woff2 = listSheetUrls();
   if (woff2 && woff2 < names.length) problems.push(`目录里只有 ${woff2} 个 woff2，字体表引用了 ${names.length} 个`);
-  return { files: files.length, woff2, slices: names.length, problems };
+  return { files: files.length, woff2, slices: names.length, art, problems };
 }
 
 /** Recursively list every scannable file under `root`, relative to `root` (not to the directory being walked). */
@@ -194,19 +248,22 @@ export function checkZipOffline(file, o = {}) {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const zipAt = process.argv.indexOf('--zip');
+  const prefixAt = process.argv.indexOf('--prefix');
   let r;
   let target;
   if (zipAt >= 0) {
     target = process.argv[zipAt + 1] || 'mobile/android/app/build/outputs/apk/release/app-release.apk';
-    r = checkZipOffline(target);
+    // --prefix lets the same gate read an ipa (Payload/App.app/public/) as well as an apk (assets/public/)
+    r = checkZipOffline(target, prefixAt >= 0 ? { prefix: process.argv[prefixAt + 1] } : {});
   } else {
     target = path.resolve(process.argv[2] || 'build/client/www');
     r = checkPayloadOffline(target);
   }
-  console.log(`离线闸门（${zipAt >= 0 ? 'apk' : '目录'} ${target}）：扫描 ${r.files} 个文本文件，woff2 镜像 ${r.woff2} 个，字体表引用 ${r.slices} 个`);
+  const art = r.art || { checked: 0, refs: 0 };
+  console.log(`离线闸门（${zipAt >= 0 ? '压缩包' : '目录'} ${target}）：扫描 ${r.files} 个文本文件，woff2 镜像 ${r.woff2} 个，字体表引用 ${r.slices} 个，美术清单 ${art.checked} 份共 ${art.refs} 个 URL`);
   if (r.problems.length) {
     for (const p of r.problems) console.error('  ✗ ' + p);
     process.exit(1);
   }
-  console.log('  ✓ 零外部字体主机、零 CDN 绝对地址，字体镜像完整');
+  console.log('  ✓ 零外部字体主机、零 CDN 绝对地址，字体镜像与美术引用完整');
 }

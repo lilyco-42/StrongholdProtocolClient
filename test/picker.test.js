@@ -10,7 +10,7 @@ import { readFileSync } from 'node:fs';
 
 import {
   BUILTIN_SERVERS, COMMUNITY_SERVERS, K_AUTOSTART, K_CHOSEN, K_LIST, K_SEED, K_SERVER, NAME_MAX, SEED_VERSION,
-  addressError, ambiguousScheme, autostartOn, cleanName, customFrom, isAndroidUA, missingSeeds, orderCandidates,
+  addressError, ambiguousScheme, autostartOn, cleanName, customFrom, isAndroidUA, isPickerHotkey, missingSeeds, orderCandidates,
   otherScheme, pathOf, probeReason, rootWsUrl, serverName, shouldShowPicker,
 } from '../shell/picker-core.js';
 
@@ -279,5 +279,34 @@ describe('the picker module graph', () => {
     for (const name of exportsOf(core)) {
       if (called.has(name)) assert.ok(imported.has(name), `picker.js calls ${name}() but never imports it`);
     }
+  });
+});
+
+// F2 = "换个服务器"。Electron 壳在原生层拦（desktop/main.mjs 的 before-input-event + preventDefault），
+// 所以页面收不到；**Tauri 壳一条原生快捷键都没有实现**（2026-10-08 玩家真机报"按 F2 无效"），网页版同样没有。
+// 于是规则放在 picker-core.js（可单测），接线放在 picker.js（三端共用一份）。
+describe('the F2 hotkey', () => {
+  test('only a bare, non-repeated F2 counts', () => {
+    assert.equal(isPickerHotkey('F2', false, {}), true);
+    assert.equal(isPickerHotkey('F2', true, {}), false, '按住不放会连发 repeat，不该反复弹选择页');
+    assert.equal(isPickerHotkey('f2', false, {}), false, 'KeyboardEvent.key 是 "F2"，小写不算（别放宽成 toLowerCase）');
+    assert.equal(isPickerHotkey('F3', false, {}), false);
+    assert.equal(isPickerHotkey('', false, {}), false);
+    assert.equal(isPickerHotkey(), false, '没有事件也不该炸');
+    for (const mods of [{ ctrlKey: true }, { altKey: true }, { metaKey: true }, { shiftKey: true }]) {
+      assert.equal(isPickerHotkey('F2', false, mods), false, `带修饰键的 F2 是别人的快捷键：${JSON.stringify(mods)}`);
+    }
+  });
+
+  test('picker.js wires it in the page, not only in the Electron shell', () => {
+    const src = readFileSync(new URL('../shell/picker.js', import.meta.url), 'utf8')
+      .split('\n').filter((l) => !/^\s*(?:\/\/|\*)/.test(l)).join('\n');
+    assert.match(src, /globalThis\.addEventListener\??\.\(\s*'keydown'/, '页面要自己听 keydown（Tauri 没有原生快捷键）');
+    assert.match(src, /isPickerHotkey\(\s*ev\.key,\s*ev\.repeat,\s*ev\s*\)/, '判断走 picker-core 的规则，别在 DOM 层重写一份');
+    assert.match(src, /showPicker\(\)/, '命中后弹选择页');
+    assert.match(src, /ev\.preventDefault\(\)/, 'F2 在浏览器里没有默认行为，但 WebView2 可能有 —— 吃掉它');
+    // Electron 那条原生路径必须还在：它 preventDefault 了，页面这条才不会被重复触发。
+    const main = readFileSync(new URL('../desktop/main.mjs', import.meta.url), 'utf8');
+    assert.match(main, /key === 'f2'[\s\S]{0,80}showServerPicker/, 'desktop/main.mjs 仍要在原生层处理 F2（Electron 的键盘事件先给它）');
   });
 });

@@ -25,7 +25,7 @@
 import { toHttpUrl, toWsUrl } from '../net.js';
 import {
   BUILTIN_SERVERS, COMMUNITY_SERVERS, K_AUTOSTART, K_CHOSEN, K_LIST, K_SEED, K_SERVER, NAME_MAX, SEED_VERSION,
-  addressError, ambiguousScheme, autostartOn, cleanName, customFrom, isAndroidUA, missingSeeds, orderCandidates,
+  addressError, ambiguousScheme, autostartOn, cleanName, customFrom, isAndroidUA, isPickerHotkey, missingSeeds, orderCandidates,
   pathOf, probeReason, rootWsUrl, serverName, shouldShowPicker,
 } from './picker-core.js';
 
@@ -635,3 +635,15 @@ const autostart = autostartOn(readItem(K_AUTOSTART, 'localStorage'), isAndroid()
 // Seeding runs even when the overlay stays hidden: F2 has to find the same list a first launch would have shown.
 seedCommunityServers();
 if (shouldShowPicker({ forced, chosenThisSession, savedAddress, autostart })) showPicker();
+
+/**
+ * F2 = "换个服务器"，在页面里听。Electron 壳本来就在原生层拦了它（`desktop/main.mjs` 的
+ * `before-input-event` + `preventDefault()`），所以那边根本不会走到这一行；而 **Tauri 壳没有任何原生快捷键**
+ * （F2/F5/F11/F12 一个都没实现），网页版也没有 —— 玩家按 F2 什么都不会发生。放在这里就三端同一份实现。
+ * `showPicker()` 自身是幂等的（已经开着就什么都不做），所以即便哪天两个处理器同时收到也不会叠两层。
+ */
+globalThis.addEventListener?.('keydown', (ev) => {
+  if (!isPickerHotkey(ev.key, ev.repeat, ev)) return;
+  ev.preventDefault();
+  showPicker();
+});

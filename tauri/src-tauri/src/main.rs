@@ -10,6 +10,11 @@
 //! 换成随机端口或 `tauri://localhost` 就会让人以为存档丢了。HTTP 细节在 `server.rs`，逐条对着
 //! `desktop/serve.mjs` 写，并由 `test/tauri-parity.test.js` 钉住两边不许漂移。
 
+// 发布版不许带控制台窗口。Rust 的二进制默认是 **console 子系统**，双击启动时 Windows 会先给开一个黑窗，
+// 里面是本壳的日志（2026-10-08 玩家真机报："启动有这个控制台，能去掉么"）。debug 构建保留，
+// `cargo tauri dev` 的日志还要看得见；release 下日志改由 `die()` 弹原生框（见那里）。
+#![cfg_attr(all(not(debug_assertions), not(test)), windows_subsystem = "windows")]
+
 mod server;
 
 use server::ServeStats;
@@ -23,8 +28,58 @@ const ORIGIN_MARKER: &str = "卫戍协议";
 
 fn main() {
     if let Err(e) = run() {
-        eprintln!("[tauri] {e}");
-        std::process::exit(1);
+        die(&e.to_string());
+    }
+}
+
+/// 启动失败怎么让人看见。
+///
+/// release 版没有控制台了（见文件头的 `windows_subsystem`），双击启动的人看不见 `eprintln!` ——
+/// "点了没反应"比一个黑窗更难查。所以致命错误弹一个原生消息框，Electron 壳那边对应
+/// `dialog.showErrorBox`（`desktop/main.mjs`）。**探针模式下绝不弹**：CI 会被模态框挂住 90 秒然后超时，
+/// 而那一步要的是 stdout 上的 `boot_probe` 行。
+fn die(msg: &str) -> ! {
+    eprintln!("[tauri] {msg}");
+    popup(msg, MB_ICONERROR);
+    std::process::exit(1);
+}
+
+/// 不是故障、但必须解释一句的情况：47821 上已经是本游戏自己的页面了。
+///
+/// Electron 那边是 `app.requestSingleInstanceLock()` 失败就静默退出 + `second-instance` 把已有窗口抬到前面
+/// （`desktop/main.mjs:79/236`）。本壳没有单实例插件，抬不了那个窗口，所以至少说清"已经开着了"——
+/// 否则玩家双击完什么都没发生，只会以为客户端坏了。
+fn notice(msg: &str) -> ! {
+    eprintln!("[tauri] {msg}");
+    popup(msg, MB_ICONINFORMATION);
+    std::process::exit(0);
+}
+
+const MB_ICONERROR: u32 = 0x0000_0010;
+const MB_ICONINFORMATION: u32 = 0x0000_0040;
+
+/// 探针模式（CI 的启动测量）下静默；其余情况在 Windows 上弹一个原生框。
+fn popup(msg: &str, icon: u32) {
+    #[cfg(windows)]
+    if std::env::var("SP_TAU_BOOT_PROBE").is_err() {
+        message_box(msg, icon);
+    }
+    #[cfg(not(windows))]
+    let _ = (msg, icon);
+}
+
+/// 直接声明 `MessageBoxW`，不为此加一个 windows 绑定的 crate（`#[link]` 让链接器去找 user32.lib）。
+#[cfg(windows)]
+fn message_box(msg: &str, icon: u32) {
+    #[link(name = "user32")]
+    extern "system" {
+        fn MessageBoxW(hwnd: *mut core::ffi::c_void, text: *const u16, caption: *const u16, utype: u32) -> i32;
+    }
+    let wide = |s: &str| -> Vec<u16> { s.encode_utf16().chain(std::iter::once(0)).collect() };
+    let text = wide(msg);
+    let caption = wide("卫戍协议：盟约");
+    unsafe {
+        MessageBoxW(core::ptr::null_mut(), text.as_ptr(), caption.as_ptr(), icon);
     }
 }
 
@@ -37,7 +92,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // 端口已被占用时先分清占它的是"另一个我们"还是别人。前者必须退出：第二个实例会退到 47822 上开出一个全新
     // origin，玩家看到的是代号、设置、调配全空 —— 那比启动慢更容易被当成存档丢了。
     if occupied_by_us()? {
-        return Err("已经有一个客户端在跑（47821 上就是本游戏的页面），不再开第二个：第二个会换到别的端口，localStorage 是另一份".into());
+        notice("已经有一个客户端在跑（47821 上就是本游戏的页面），不再开第二个。\n\n要看另一个服务器：在那个窗口里按 F2。");
     }
 
     let stats = Arc::new(ServeStats::default());

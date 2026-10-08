@@ -116,3 +116,45 @@ test('there is no portable/self-extracting target anywhere in the Tauri lane', (
     assert.ok(wf.includes(gate), `Tauri 流水线少了闸门：${gate}`);
   }
 });
+
+// 2026-10-08 玩家真机报的两条：启动有个黑控制台窗口；按 F2 没反应。
+// 第一条是 Rust 二进制的默认子系统；第二条是"原生快捷键只在 Electron 里实现过"。两条都必须有钉，
+// 否则下一次改壳又会悄悄退回去（黑窗好看见，F2 失效不好看见）。
+test('the release shell has no console window, and still tells the player when it cannot start', () => {
+  const main = fs.readFileSync(path.join(ROOT, 'tauri', 'src-tauri', 'src', 'main.rs'), 'utf8');
+  assert.match(main, /#!\[cfg_attr\(all\(not\(debug_assertions\), not\(test\)\), windows_subsystem = "windows"\)\]/,
+    'release 必须用 windows 子系统（否则双击启动会带一个黑控制台）');
+  assert.ok(!/#!\[cfg_attr\(not\(debug_assertions\), windows_subsystem/.test(main),
+    '不能漏掉 not(test)：cargo test --release 的测试可执行文件也要能正常打日志');
+  // 属性必须在任何 item 之前（Rust 的 inner attribute 规则），否则编译直接红。
+  const at = main.indexOf('#![cfg_attr');
+  const firstItem = main.search(/^\s*(?:mod|use|fn|const|struct) /m);
+  assert.ok(at > 0 && firstItem > at, 'windows_subsystem 要写在 mod/use/fn 之前');
+
+  // 没有控制台了，致命错误就必须走原生框；而 CI 的探针模式绝不能弹（模态框会挂住那一步）。
+  assert.match(main, /fn die\(msg: &str\) -> !/, '启动失败要有统一的出口');
+  assert.match(main, /popup\(msg, MB_ICONERROR\)/, '失败弹错误框（对应 Electron 的 dialog.showErrorBox）');
+  assert.match(main, /fn notice\(msg: &str\) -> !/, '"已经有一个在跑"是正常情况，不能当错误报');
+  assert.match(main, /popup\(msg, MB_ICONINFORMATION\)/, '正常情况用信息图标');
+  assert.match(main, /if std::env::var\("SP_TAU_BOOT_PROBE"\)\.is_err\(\)/,
+    '探针模式下绝不弹框：CI 会被模态框挂住');
+  assert.match(main, /std::process::exit\(0\)/, 'notice 走 0 退出（不是失败）');
+  // 不新增 windows 绑定 crate：直接 link user32。
+  assert.match(main, /#\[link\(name = "user32"\)\]/, 'MessageBoxW 用 #[link] 声明，别为它加依赖');
+  const cargo = fs.readFileSync(path.join(ROOT, 'tauri', 'src-tauri', 'Cargo.toml'), 'utf8');
+  assert.ok(!/windows-sys|windows = /.test(cargo), 'Cargo.toml 里不该出现 windows 绑定 crate（这条路径刻意不用）');
+});
+
+test('the boot probe is a real gate now that the console is gone', () => {
+  const wf = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'build-tauri.yml'), 'utf8');
+  // 按步骤边界切块："以前是 continue-on-error" 这句话就写在上面的注释里，拿整段文本匹配会自相矛盾。
+  const lines = wf.split('\n');
+  const from = lines.findIndex((l) => /^\s*- name: 启动探针/.test(l));
+  assert.ok(from >= 0, '要有"启动探针"这个步骤');
+  let to = lines.length;
+  for (let i = from + 1; i < lines.length; i++) if (/^\s*- name: /.test(lines[i])) { to = i; break; }
+  const step = lines.slice(from, to).filter((l) => !/^\s*#/.test(l)).join('\n');
+  assert.ok(!/continue-on-error/.test(step), '探针不能再 continue-on-error：去掉控制台后它是 stdout 是否还可达的唯一证据');
+  assert.match(step, /Select-String[\s\S]{0,120}main_js_ms/, '要真的按 boot_probe 行的形状去读，而不是"文件里有字"');
+  assert.match(step, /exit 1/, '读不到就红');
+});

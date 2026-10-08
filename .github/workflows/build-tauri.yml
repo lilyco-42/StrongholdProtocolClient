@@ -169,17 +169,28 @@ jobs:
         run: node tools/check-payload-offline.mjs out/StrongholdProtocolTauri/www
 
       # 启动耗时：壳自己数"页面把 js/main.js 取走"用了多少毫秒。这条不是给人看的画面，是给流水线的数字，
-      # 所以窗口先不抬起来。runner 上没有 WebView2 时会失败 —— 那不能算产品坏了，故 continue-on-error。
-      - name: 启动探针（boot_probe 毫秒数）
-        continue-on-error: true
+      # 所以窗口先不抬起来。
+      #
+      # 这一条现在是**硬闸门**（以前是 continue-on-error，等于装饰）：release 壳去掉了控制台窗口
+      # （`windows_subsystem = "windows"`），日志与 boot_probe 全靠"继承来的 stdout 句柄"写进重定向文件。
+      # 那句实现一旦变（比如哪天改成写文件或不写），这里必须红，而不是让我们以为还有启动数字。
+      - name: 启动探针（boot_probe 毫秒数，闸门）
         shell: pwsh
         run: |
           $env:SP_TAU_BOOT_PROBE = "1"
           $env:SP_WWW = "out/StrongholdProtocolTauri/www"
           $exe = "out/StrongholdProtocolTauri/StrongholdProtocolTauri.exe"
           $p = Start-Process -FilePath $exe -PassThru -NoNewWindow -RedirectStandardOutput boot-probe.txt -RedirectStandardError boot-probe.err
-          if (-not $p.WaitForExit(90000)) { Stop-Process -Id $p.Id -Force; Write-Output "boot_probe: runner 上 90 秒没跑完" }
+          if (-not $p.WaitForExit(90000)) { Stop-Process -Id $p.Id -Force; Write-Output "boot_probe: 90 秒没跑完" }
           Get-Content boot-probe.txt, boot-probe.err -ErrorAction SilentlyContinue
+          $hit = Select-String -Path boot-probe.txt -Pattern 'boot_probe .*main_js_ms=\d+' -ErrorAction SilentlyContinue
+          if (-not $hit) {
+            Write-Output "闸门：boot-probe.txt 里没有 boot_probe 行"
+            Write-Output "  要么 runner 上没有可用的 WebView2（窗口建不起来，见上面 stderr），"
+            Write-Output "  要么壳的 stdout 不再流到重定向句柄（去掉控制台窗口的连带风险）。"
+            exit 1
+          }
+          Write-Output "启动探针 OK：$($hit.Line)"
 
       - name: 收齐两种形态
         shell: pwsh

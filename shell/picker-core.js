@@ -225,3 +225,19 @@ export function probeReason({ ok, online, hadPath }) {
   if (ok || !online) return '';
   return hadPath ? '对方在线，但 /ws 与该路径下的 /ws 都没通' : '对方在线，但 /ws 没通（多半没转发到游戏服务）';
 }
+
+/**
+ * Is this key event the "换个服务器" hotkey? F2 alone, no modifiers, and not an auto-repeat.
+ *
+ * Why the rule lives here: the Electron shell intercepts F2 in the *native* layer
+ * (`desktop/main.mjs` `before-input-event`, which calls `preventDefault()`), so the page never sees it there.
+ * The Tauri shell has no native key handling at all (and neither does a browser), so `picker.js` listens for it in
+ * the page — one rule, three hosts, and the repeat/modifier cases are the part that is easy to get silently wrong.
+ * @param {string} [key] `KeyboardEvent.key`
+ * @param {boolean} [repeat] `KeyboardEvent.repeat`
+ * @param {{ctrlKey?: boolean, altKey?: boolean, metaKey?: boolean, shiftKey?: boolean}} [mods]
+ */
+export function isPickerHotkey(key, repeat, mods) {
+  if (key !== 'F2' || repeat) return false;
+  return !(mods && (mods.ctrlKey || mods.altKey || mods.metaKey || mods.shiftKey));
+}

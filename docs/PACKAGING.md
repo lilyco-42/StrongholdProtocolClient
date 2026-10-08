@@ -421,7 +421,7 @@ package.bat --portable                    # 桌面改出单文件便携 exe
 - 缺 JDK 17+ / Android SDK 时脚本**跳过 APK 并继续**（只报一句警告）。本机实测可用 `C:\Program Files\Java\jdk-21` 与 `%LOCALAPPDATA%\Android\Sdk`，脚本会自己找。
 - Windows 下 zip 用系统自带的 `tar -a`（bsdtar）；想要更小就自己用 7-Zip 的 LZMA2（见 §4.1）。
 
-## 11. Tauri 壳（`tauri/`，另一条流水线 `build-tauri.yml`）
+## 14. Tauri 壳（`tauri/`，另一条流水线 `build-tauri.yml`）
 
 玩家报的两条是**体积大**和**启动慢**，这两条各有各的账，得分开算：
 
@@ -435,11 +435,33 @@ package.bat --portable                    # 桌面改出单文件便携 exe
 所以 Tauri 治的是那 320 MiB，治不了 825 MiB 的素材；启动慢的主因是**单文件自解压形态**，
 因此这条流水线**只出目录版与安装器，不出 portable**。
 
+那 825.4 MiB 里都是什么（2026-10-08 对**已发布**的 c22 ipa 量的，sha256 `2fa871d8…`，13,968 个文件；
+命令本身是出厂闸门脚本的一个模式，apk / 目录都能读）：
+
+```
+node tools/check-payload-offline.mjs --sizes --zip Stronghold-0.2.1-c22-ios-unsigned.ipa --prefix Payload/App.app/public/
+```
+
+| 目录 | 大小 | 文件数 | 是什么 |
+| --- | --- | --- | --- |
+| `assets/spine` | 394.3 MiB | 3,050 | 干员/敌人的骨骼与贴图页 —— **这就是"立绘"本身** |
+| `assets/audio` | 188.3 MiB | 6,057 | BGM 与音效 |
+| `assets/char` | 79.8 MiB | 976 | 头像 180×180 与半身立绘 180×360 |
+| `assets/local` | 60.9 MiB | 1,488 | 从官方客户端抽出来的 3D 棋盘素材（含整包里最大的那几张 2048×2048 贴图） |
+| `assets/ui` | 39.2 MiB | 602 | 界面图与攻略页大图 |
+| 其余（`assets/enemy|skill|band|…`、`data` `dev` `webfonts` `sim` `vendor` `js` …） | 63.0 MiB | 1,795 | 剩下的图、数据、开发页、字体镜像、对局模拟、三方库 |
+
+再想往下砍只有两条路，都不合现在的产品约定：素材改成按需下载（那就不是"离线进对局"了），
+或者砍皮肤/语音档（那是玩家要的东西）。所以这一节的结论是**别在素材上动刀，壳侧的收益见 §16**。
+
 壳的形态：`tauri/src-tauri/src/server.rs` 是一个 std 手写的只监听 `127.0.0.1:47821` 的静态服务器，
 窗口加载 `http://127.0.0.1:47821/` —— **故意与 Electron 壳用同一个 origin**：Chromium/WebView2 按 origin 划分
 localStorage，博士代号、干员调配、设置、记住的服务器全在里面，端口随机或改用 `tauri://localhost`
 都会让玩家以为存档丢了。端口被占时先认清"占它的是不是本游戏自己的页面"（`occupied_by_us`），
-是就退出而不是退到 47822 —— 那等于悄悄换了 origin。
+是就退出而不是退到 47822 —— 那等于悄悄换了 origin；c26 起在这之前还先看一个**内核命名互斥量**
+（`already_running`），因为端口探针只看得见已经在服务的实例，看不见正在启动的实例，
+两次双击挤在一起时仍然会开出第二个 origin。真的挪了端口（别人占着 47821）时也不再静默：弹一句说明
+"这个窗口里代号/编队/设置会是空的，因为那是按端口存的"。
 
 `server.rs` 是 `desktop/serve.mjs` 的手抄，所以有 `test/tauri-parity.test.js` 把两边的
 MIME 表、`/media` 扩展名**顺序**、长缓存目录集合、端口常量从**源码里各读一遍**再逐条比（抄错不会有人发现：
@@ -447,9 +469,12 @@ MIME 表、`/media` 扩展名**顺序**、长缓存目录集合、端口常量�
 Rust 侧的规则另有 `cargo test`（遍历、别名顺序、Range 钳制、ETag 与 `Date.toUTCString()` 逐字节一致）。
 两条都在 `build-tauri.yml` 里当闸门用，不绿不打包。
 
-`SP_TAU_BOOT_PROBE=1` 时窗口不抬起来，壳自己数"页面把 `js/main.js` 取走"用了多少毫秒并打印
-`boot_probe first_request_ms=… main_js_ms=… requests=…`，流水线里那一步就是拿它当启动耗时的证据
-（runner 上没有 WebView2 时会失败，所以那一步是 `continue-on-error`，不把它当成产品坏了）。
+`SP_TAU_BOOT_PROBE=1` 时窗口不抬起来，壳自己数"页面把 `js/main.js` 取走"用了多少毫秒、这中间收了几个请求、
+用了几条 TCP 连接，打印
+`boot_probe first_request_ms=… main_js_ms=… requests=… connections=…`。流水线里那一步现在**是硬闸门**
+（c25 起，以前是 `continue-on-error`，等于装饰）：去掉控制台窗口之后，这一行同时是"stdout 还可达"的唯一证据；
+connections 那半个字段是 c26 加的，并且**连接数不少于请求数就判红** —— 否则哪天退回到"一个连接一个请求"，
+这一行照样打印，没人会去看数字（见 §16）。runner 上没有可用 WebView2 时这一步也会红，那是环境问题不是产物问题。
 
 **c24 的两个形态实测大小**（同一份 payload，`build-tauri.yml` run `37671372625`）：
 
@@ -468,7 +493,7 @@ Rust 侧的规则另有 `cargo test`（遍历、别名顺序、Range 钳制、ET
 CI 侧另有三道：`cargo test`（遍历/别名顺序/Range 钳制/日期格式）+ `test/tauri-parity.test.js`
 （两张表从两边源码各读一遍再比）+ 对**产物内 www** 再跑一次零外链闸门。
 
-## 12. c25：壳自己的两条真机反馈（黑控制台 + F2）
+## 15. c25：壳自己的两条真机反馈（黑控制台 + F2）
 
 玩家自己装了 Tauri 版，报了两条，都是壳的问题，与游戏内容无关 —— 所以这一版**只重发 Tauri 那一个资产**
 （Release `tauri-v0.2.1-c25`），Electron / apk / ipa 继续用 `v0.2.1-c24` 那五个，不让人白重下 3.5 GB。

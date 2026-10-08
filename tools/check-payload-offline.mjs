@@ -246,21 +246,76 @@ export function checkZipOffline(file, o = {}) {
   return { ...r, entries: entries.length };
 }
 
+/**
+ * Where the bytes are, per top-level directory of the web root. Answers "能不能再小一点" with a table
+ * instead of a guess (docs/PACKAGING.md §14 keeps the numbers this prints for the published bundles).
+ * `--sizes` with either `--zip <ipa|apk> [--prefix …]` or a payload directory.
+ * @param {{ root?: string, zip?: string, prefix?: string }} o
+ * @returns {{ total: number, files: number, by: Map<string, { bytes: number, files: number }> }}
+ */
+export function sizeCensus(o) {
+  const by = new Map();
+  const add = (rel, bytes) => {
+    const seg = rel.includes('/') ? rel.slice(0, rel.indexOf('/')) : '(根目录文件)';
+    const cur = by.get(seg) || { bytes: 0, files: 0 };
+    cur.bytes += bytes;
+    cur.files += 1;
+    by.set(seg, cur);
+  };
+  let files = 0;
+  if (o.zip) {
+    const prefix = o.prefix ?? 'assets/public/';
+    const { entries } = zipEntries(o.zip);
+    for (const e of entries) {
+      if (e.name.endsWith('/') || !e.name.startsWith(prefix)) continue;
+      add(e.name.slice(prefix.length), e.uncompSize);
+      files++;
+    }
+  } else {
+    const walk = (dir, base) => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const p = path.join(dir, e.name);
+        if (e.isDirectory()) { walk(p, base); continue; }
+        if (!e.isFile()) continue;
+        add(path.relative(base, p).split(path.sep).join('/'), fs.statSync(p).size);
+        files++;
+      }
+    };
+    walk(o.root, o.root);
+  }
+  let total = 0;
+  for (const v of by.values()) total += v.bytes;
+  return { total, files, by };
+}
+
+/** 1,048,576 为单位读数，保留一位小数 —— 表格里的数字要与 docs 里能对上。 */
+export const mib = (bytes) => (bytes / 1024 / 1024).toFixed(1);
+
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const zipAt = process.argv.indexOf('--zip');
   const prefixAt = process.argv.indexOf('--prefix');
-  let r;
-  let target;
-  if (zipAt >= 0) {
-    target = process.argv[zipAt + 1] || 'mobile/android/app/build/outputs/apk/release/app-release.apk';
-    // --prefix lets the same gate read an ipa (Payload/App.app/public/) as well as an apk (assets/public/)
-    r = checkZipOffline(target, prefixAt >= 0 ? { prefix: process.argv[prefixAt + 1] } : {});
-  } else {
-    target = path.resolve(process.argv[2] || 'build/client/www');
-    r = checkPayloadOffline(target);
+  const prefix = prefixAt >= 0 ? process.argv[prefixAt + 1] : undefined;
+  const asZip = zipAt >= 0;
+  const target = asZip
+    ? (process.argv[zipAt + 1] || 'mobile/android/app/build/outputs/apk/release/app-release.apk')
+    : path.resolve(process.argv.find((a, i) => i >= 2 && !a.startsWith('--')) || 'build/client/www');
+
+  // --sizes 只看大小，不做判定：它回答的是"这 826 MiB 里都是什么"，与闸门是两件事。
+  if (process.argv.includes('--sizes')) {
+    const c = asZip ? sizeCensus({ zip: target, prefix }) : sizeCensus({ root: target });
+    const rows = [...c.by.entries()].sort((a, b) => b[1].bytes - a[1].bytes);
+    console.log(`大小分布（${target}）：${mib(c.total)} MiB / ${c.files} 个文件`);
+    for (const [seg, v] of rows) {
+      console.log(`  ${mib(v.bytes).padStart(8)} MiB  ${String(v.files).padStart(6)}  ${seg}`);
+    }
+    process.exit(0);
   }
+
+  const r = asZip
+    ? checkZipOffline(target, prefix ? { prefix } : {})
+    : checkPayloadOffline(target);
   const art = r.art || { checked: 0, refs: 0 };
-  console.log(`离线闸门（${zipAt >= 0 ? '压缩包' : '目录'} ${target}）：扫描 ${r.files} 个文本文件，woff2 镜像 ${r.woff2} 个，字体表引用 ${r.slices} 个，美术清单 ${art.checked} 份共 ${art.refs} 个 URL`);
+  console.log(`离线闸门（${asZip ? '压缩包' : '目录'} ${target}）：扫描 ${r.files} 个文本文件，woff2 镜像 ${r.woff2} 个，字体表引用 ${r.slices} 个，美术清单 ${art.checked} 份共 ${art.refs} 个 URL`);
   if (r.problems.length) {
     for (const p of r.problems) console.error('  ✗ ' + p);
     process.exit(1);

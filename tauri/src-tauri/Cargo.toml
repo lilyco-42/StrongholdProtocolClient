@@ -10,7 +10,10 @@ publish = false
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+# devtools 必须显式开：Tauri 只在 debug 构建里默认给，而玩家报"白屏/立绘没出来"这类问题时要的就是
+# release 版里那一层 F12 —— 没有它，出问题的这台机器上没有任何地方能看见错误。
+# 不加额外运行时（WebView2 自带检查器），代价只是这个 feature 名写错时编译失败，不会静默少功能。
+tauri = { version = "2", features = ["devtools"] }
 
 # 这个壳的存在理由就是省体积，所以发布构建按体积优先。
 [profile.release]

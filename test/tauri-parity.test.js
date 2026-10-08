@@ -158,3 +158,69 @@ test('the boot probe is a real gate now that the console is gone', () => {
   assert.match(step, /Select-String[\s\S]{0,120}main_js_ms/, '要真的按 boot_probe 行的形状去读，而不是"文件里有字"');
   assert.match(step, /exit 1/, '读不到就红');
 });
+
+// 两个壳讲的得是同一种 HTTP，"一条连接能装几个请求"也算在内。Electron 那边的 keep-alive 是 Node 的
+// http.Server 白送的，Rust 这份是手写的：一旦退回"一个连接一个请求"，一局游戏里几百个文件就要几百次
+// TCP 连接加几百个线程，而日志上只会显示"变慢了"，看不出原因。连接的复用与计数都要有钉。
+test('the Rust server reuses connections the way Node does', () => {
+  const shipped = RUST.slice(0, RUST.indexOf('#[cfg(test)]'));
+  assert.match(shipped, /fn serve_connection\(/, '服务的单位必须是连接，不是请求');
+  assert.match(shipped, /stats\.connections\.fetch_add\(1/, '每条连接要计数（boot_probe 里那个 connections= 就是它）');
+  assert.match(shipped, /thread::spawn\(move \|\| serve_connection\(/, 'accept 循环要交给连接级函数');
+  assert.match(shipped, /Ok\(true\) => continue/, 'keep-alive 的回答之后必须回去读下一个请求');
+  assert.match(shipped, /fn reusable\(&self\) -> bool/, '1.1 默认续用、1.0 默认不续用得有实现处');
+  assert.match(shipped, /let close_line = if keep \{ "" \} else \{ "Connection: close\\r\\n" \};/,
+    '只在真要关的时候写这个头（Node 续用时一个字节都不多说）');
+  assert.ok(!/out\.push_str\("Connection: close/.test(shipped), '200/206 的回答不能再无条件关连接');
+
+  // 正文字节数必须与 Content-Length 一致。416 以前带整个文件：一次性连接时无所谓，
+  // 复用连接时那堆字节会被下一个回答当成开头读，症状是"偶发的图片损坏"，最难查。
+  assert.match(shipped, /status = "416 Range Not Satisfiable";\s*length = 0;/, '416 不许带正文');
+  assert.match(shipped, /if length == 0 \|\| method == "HEAD" \{[\s\S]{0,80}return Ok\(keep\);/,
+    '没有正文时也要把连接留着（304/416/HEAD 都算）');
+});
+
+test('the boot probe prints connections, so "the page reused its sockets" is a number', () => {
+  const main = fs.readFileSync(path.join(ROOT, 'tauri', 'src-tauri', 'src', 'main.rs'), 'utf8');
+  assert.match(main, /requests=\{\} connections=\{\}/, 'boot_probe 那行必须同时报请求数与连接数');
+  assert.match(main, /s\.connections\.load\(Ordering::Relaxed\)/);
+  // 探针自己那发探测请求必须要求关闭，否则对面的 keep-alive 会让我们 read_to_end 挂到超时
+  assert.match(main, /GET \/ HTTP\/1\.1\\r\\nHost: 127\.0\.0\.1\\r\\nConnection: close/);
+
+  // 而且 CI 必须真的按这两个数判红绿："退回一个连接一个请求"时 boot_probe 行照样打印，
+  // 只看"有没有这行"是抓不住的。
+  const wf = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'build-tauri.yml'), 'utf8');
+  const lines = wf.split('\n');
+  const from = lines.findIndex((l) => /^\s*- name: 启动探针/.test(l));
+  let to = lines.length;
+  for (let i = from + 1; i < lines.length; i++) if (/^\s*- name: /.test(lines[i])) { to = i; break; }
+  const step = lines.slice(from, to).join('\n');
+  assert.match(step, /requests=\(\\d\+\) connections=\(\\d\+\)/, '探针步骤要按两个数去解析');
+  assert.match(step, /if \(\$con -ge \$req\)/, '连接数不少于请求数时必须红 —— 那说明没复用');
+});
+
+// 玩家报"白屏 / 立绘没出来"时，出问题的只有那一台机器，而 release 壳没有控制台。
+// WebView2 自带检查器，开它的代价只是一个 feature 名 —— 没有它，那台机器上没有任何地方能看见错误。
+test('the release Tauri build keeps F12 (devtools)', () => {
+  const cargo = fs.readFileSync(path.join(ROOT, 'tauri', 'src-tauri', 'Cargo.toml'), 'utf8');
+  assert.match(cargo, /tauri = \{[^}]*features = \[[^\]]*"devtools"[^\]]*\]/,
+    'Tauri 只在 debug 构建默认开 devtools；release 里 F12 需要这个 feature');
+});
+
+// 单实例：先看内核对象，再看端口。顺序错了就会开出第二个 origin —— 而 localStorage 是按 origin 存的。
+test('a second launch is caught by a kernel object before the port is bound', () => {
+  const main = fs.readFileSync(path.join(ROOT, 'tauri', 'src-tauri', 'src', 'main.rs'), 'utf8');
+  assert.match(main, /#\[link\(name = "kernel32"\)\]/, 'CreateMutexW 用 #[link] 声明，和 MessageBoxW 一样不加依赖');
+  assert.match(main, /fn CreateMutexW\(/);
+  assert.match(main, /const ERROR_ALREADY_EXISTS: u32 = 183;/);
+  const mutex = main.indexOf('if already_running()');
+  const probe = main.indexOf('if occupied_by_us()?');
+  const bind = main.indexOf('server::spawn_server(');
+  assert.ok(mutex > 0 && mutex < probe && probe < bind, '必须是 互斥量 → 端口探针 → 绑端口');
+
+  // 端口被挪走时不许静默：那等于换 origin，代号/编队/设置在这个窗口里就是空的
+  assert.match(main, /if port != server::DEFAULT_PORT \{[\s\S]{0,600}?popup\(/,
+    '换了端口必须弹一句解释（探针模式下 popup 自己会跳过）');
+  const cargo = fs.readFileSync(path.join(ROOT, 'tauri', 'src-tauri', 'Cargo.toml'), 'utf8');
+  assert.ok(!/windows-sys|windows = /.test(cargo), '这条路径刻意不用 windows 绑定 crate');
+});

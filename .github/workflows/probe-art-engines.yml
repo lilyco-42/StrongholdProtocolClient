@@ -61,6 +61,9 @@ jobs:
         env:
           TAG: ${{ inputs.release_tag }}
           ASSET: ${{ inputs.asset }}
+          # gh 在没有 token 的 step 里报 "could not find any host configurations" —— 默认 workflow token 不会自动
+          # 出现在环境变量里，必须显式给。仓库是公开的，所以这个 token 只是让 gh 能说话，不涉及任何写权限。
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/dl"

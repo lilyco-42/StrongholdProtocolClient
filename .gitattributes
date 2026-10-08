@@ -23,3 +23,5 @@ deploy/** text eol=lf
 *.p12 binary
 *.rs text eol=lf
 *.yml  text eol=lf
+*.toml text eol=lf
+*.lock text eol=lf

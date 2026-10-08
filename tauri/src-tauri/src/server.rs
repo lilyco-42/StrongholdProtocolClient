@@ -336,13 +336,12 @@ impl Req {
 /// about six of each for the same page.
 fn serve_connection(mut sock: TcpStream, root: &Path, stats: &Arc<ServeStats>, t0: std::time::Instant) {
     stats.connections.fetch_add(1, Ordering::Relaxed);
-    // 15 s for both "a request is on its way" and "the next request on this socket is on its way". Node's
-    // keepAliveTimeout is 5 s, so an idle pooled socket lives longer here than it would under the Electron shell —
-    // deliberate: one read timeout applies to the whole connection here (the socket is duplicated for the BufReader,
-    // and changing SO_RCVTIMEO on one handle of a duplicated Windows socket is not something to bet a shipping build
-    // on). The risk of an idle close is a connection the browser still thinks it can use; that one is already
-    // handled — a browser that finds a dead pooled socket retries the GET itself, and every request here is a GET.
-    sock.set_read_timeout(Some(Duration::from_secs(15))).ok();
+    // 5 s idle, not 15: measured off `desktop/serve.mjs` on 2026-10-08, Node answers the first request with
+    // `Connection: keep-alive` + `Keep-Alive: timeout=5` and its keepAliveTimeout is 5 s. Same number here means the
+    // two shells hold a socket for the same length of time — and the Electron shell has been shipping that value
+    // to players, so "a browser reused a socket we had just closed" is not a new risk either. A browser that picks
+    // a dead pooled socket retries the GET itself, and every request here is a GET.
+    sock.set_read_timeout(Some(Duration::from_secs(5))).ok();
     sock.set_write_timeout(Some(Duration::from_secs(30))).ok();
     sock.set_nodelay(true).ok();
     // Reads go through the BufReader, writes through `sock`. The reader keeps its buffer between requests on
@@ -398,9 +397,15 @@ fn handle_request(
     let raw_url = req.raw_url.as_str();
     let header = |name: &str| -> Option<String> { req.header(name) };
     let keep = req.reusable();
-    // Node sends no Connection header at all when it intends to keep the socket, so neither do we: saying something
-    // only when closing keeps the two shells' bytes comparable (test/tauri-parity.test.js pins the rules).
-    let close_line = if keep { "" } else { "Connection: close\r\n" };
+    // The exact bytes Node's http.Server answers with, measured off `desktop/serve.mjs` on 2026-10-08: when reusing
+    // a socket it sends `Connection: keep-alive` + `Keep-Alive: timeout=5`, when closing just `Connection: close`.
+    // `test/tauri-parity.test.js` starts the JS server and compares against what it really sends, so this cannot
+    // quietly rot when Node changes its mind.
+    let tail = if keep {
+        "Connection: keep-alive\r\nKeep-Alive: timeout=5\r\n"
+    } else {
+        "Connection: close\r\n"
+    };
 
     stats.requests.fetch_add(1, Ordering::Relaxed);
     if stats.first_ms.load(Ordering::Relaxed) == 0 {
@@ -514,7 +519,7 @@ fn handle_request(
     if status != "304 Not Modified" {
         out.push_str(&format!("Content-Length: {length}\r\n"));
     }
-    out.push_str(close_line);
+    out.push_str(tail);
     out.push_str("\r\n");
 
     let head = format!("HTTP/1.1 {status}\r\n{out}");
@@ -548,6 +553,9 @@ fn handle_request(
     Ok(keep)
 }
 
+/// A one-line text answer (403 / 404 / 405). These always end the connection, even though the framing would allow
+/// reuse: `main.rs`'s "is 47821 already ours?" probe reads to EOF, and a not-found inside a locally-served payload
+/// is rare enough that one reconnect is not the cost worth optimising (Node would keep that socket alive).
 fn write_plain(sock: &mut TcpStream, status: &str, body: &str, extra: &str) -> std::io::Result<()> {
     let msg = format!(
         "HTTP/1.1 {status}\r\nContent-Type: text/plain; charset=utf-8\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -741,12 +749,15 @@ mod tests {
         let got = read_until(&mut s, "200 OK");
         assert!(got.contains("200 OK"), "第一个请求就没回来：{got:?}");
         assert!(got.contains("Content-Length: 8"));
+        // 这两行是照 Node 实测的答复钉的：desktop/serve.mjs 续用连接时发 `Connection: keep-alive` +
+        // `Keep-Alive: timeout=5`，两个壳必须一个样（test/tauri-parity.test.js 会真的起 JS 那份服务对读）。
+        assert!(got.contains("Connection: keep-alive"), "续用时该说 keep-alive：{got:?}");
+        assert!(got.contains("Keep-Alive: timeout=5"), "空闲秒数要与 Node 一致：{got:?}");
 
         ask(&mut s, "GET /b.html HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
         let second = read_until(&mut s, "BBBBBBBB");
         assert!(second.contains("200 OK"), "第二个请求没回来（连接被当成一次性了？）：{second:?}");
-        // Node sends no Connection header when it intends to keep the socket; saying nothing is the parity answer.
-        assert!(!second.contains("Connection: close"), "keep-alive 的回答里不该出现 Connection: close：{second:?}");
+        assert!(!second.contains("Connection: close"), "keep-alive 的回答里不该出现 close：{second:?}");
 
         ask(&mut s, "GET /a.html HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
         // 找 "Connection: close" 而不是 "200 OK"：前两个 keep-alive 回答的正文可能还有几个字节没读走，

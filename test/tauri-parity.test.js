@@ -8,10 +8,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import net from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { MIME, AUDIO_EXTS, LONG_CACHE_DIRS, DEFAULT_PORT, PORT_SEARCH, cacheControlFor } from '../desktop/serve.mjs';
+import { MIME, AUDIO_EXTS, LONG_CACHE_DIRS, DEFAULT_PORT, PORT_SEARCH, cacheControlFor, createStaticServer } from '../desktop/serve.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const RUST = fs.readFileSync(path.join(ROOT, 'tauri', 'src-tauri', 'src', 'server.rs'), 'utf8');
@@ -161,23 +163,65 @@ test('the boot probe is a real gate now that the console is gone', () => {
 
 // 两个壳讲的得是同一种 HTTP，"一条连接能装几个请求"也算在内。Electron 那边的 keep-alive 是 Node 的
 // http.Server 白送的，Rust 这份是手写的：一旦退回"一个连接一个请求"，一局游戏里几百个文件就要几百次
-// TCP 连接加几百个线程，而日志上只会显示"变慢了"，看不出原因。连接的复用与计数都要有钉。
-test('the Rust server reuses connections the way Node does', () => {
+// TCP 连接加几百个线程，而日志上只会显示"变慢了"，看不出原因。
+// 下面第二条是**实测对照**：我先写过一条"Node 续用连接时不多发任何头"的断言，那是猜的 —— 真跑一遍
+// Node 回的是 `Connection: keep-alive` + `Keep-Alive: timeout=5`。猜错的方向是让两个壳各自漂走，
+// 所以这里起 JS 那份服务自己问一遍，再要求 Rust 源码里出现同样的字。
+test('the Rust server reuses connections, structurally', () => {
   const shipped = RUST.slice(0, RUST.indexOf('#[cfg(test)]'));
   assert.match(shipped, /fn serve_connection\(/, '服务的单位必须是连接，不是请求');
   assert.match(shipped, /stats\.connections\.fetch_add\(1/, '每条连接要计数（boot_probe 里那个 connections= 就是它）');
   assert.match(shipped, /thread::spawn\(move \|\| serve_connection\(/, 'accept 循环要交给连接级函数');
   assert.match(shipped, /Ok\(true\) => continue/, 'keep-alive 的回答之后必须回去读下一个请求');
   assert.match(shipped, /fn reusable\(&self\) -> bool/, '1.1 默认续用、1.0 默认不续用得有实现处');
-  assert.match(shipped, /let close_line = if keep \{ "" \} else \{ "Connection: close\\r\\n" \};/,
-    '只在真要关的时候写这个头（Node 续用时一个字节都不多说）');
-  assert.ok(!/out\.push_str\("Connection: close/.test(shipped), '200/206 的回答不能再无条件关连接');
 
   // 正文字节数必须与 Content-Length 一致。416 以前带整个文件：一次性连接时无所谓，
   // 复用连接时那堆字节会被下一个回答当成开头读，症状是"偶发的图片损坏"，最难查。
   assert.match(shipped, /status = "416 Range Not Satisfiable";\s*length = 0;/, '416 不许带正文');
   assert.match(shipped, /if length == 0 \|\| method == "HEAD" \{[\s\S]{0,80}return Ok\(keep\);/,
     '没有正文时也要把连接留着（304/416/HEAD 都算）');
+});
+
+/** 在同一条 socket 上连发两个 HTTP/1.1 请求，把收到的原始字节带回来。 */
+function twoRequestsOneSocket(port) {
+  return new Promise((resolve, reject) => {
+    const s = net.connect(port, '127.0.0.1');
+    let all = '';
+    const timer = setTimeout(() => { s.destroy(); reject(new Error('两条请求没有都在同一条 socket 上得到回答')); }, 8000);
+    s.on('data', (d) => {
+      all += d.toString('latin1');
+      if ((all.match(/HTTP\/1\.1/g) || []).length >= 2) {
+        clearTimeout(timer);
+        s.destroy();
+        resolve(all);
+      }
+    });
+    s.on('error', (e) => { clearTimeout(timer); reject(e); });
+    s.write('GET /a.txt HTTP/1.1\r\nHost: x\r\n\r\n');
+    setTimeout(() => s.write('GET /a.txt HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n'), 200);
+  });
+}
+
+test('the Rust server answers connection reuse with the same bytes Node sends', async () => {
+  const shipped = RUST.slice(0, RUST.indexOf('#[cfg(test)]'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sp-ka-parity-'));
+  fs.writeFileSync(path.join(dir, 'a.txt'), 'HELLO-AAAA');
+  const srv = await createStaticServer({ root: dir, port: 0, log: { log() {}, warn() {}, error() {} } });
+  try {
+    const raw = await twoRequestsOneSocket(srv.port);
+    const heads = raw.split('HTTP/1.1').slice(1);
+    assert.equal(heads.length, 2, 'Node 必须在同一条 socket 上答两个请求，否则整个前提要重写');
+    assert.match(heads[0], /Connection: keep-alive/, 'Node 续用时发的头变了：请同步 Rust');
+    const ka = /Keep-Alive:\s*timeout=(\d+)/.exec(heads[0]);
+    assert.ok(ka, `Node 的 Keep-Alive 头形状变了：${heads[0].slice(0, 400)}`);
+    const want = `"Connection: keep-alive\\r\\nKeep-Alive: timeout=${ka[1]}\\r\\n"`;
+    assert.ok(shipped.includes(want), `Rust 那侧必须发同样的两行（要找的字面量：${want}）`);
+    assert.ok(shipped.includes(`Duration::from_secs(${ka[1]})`), `Rust 空闲超时要与 Node 报的 ${ka[1]} 秒一致`);
+    assert.ok(!/Duration::from_secs\(15\)/.test(shipped), '旧的 15 秒空闲值不该还留在文件里');
+  } finally {
+    await srv.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('the boot probe prints connections, so "the page reused its sockets" is a number', () => {

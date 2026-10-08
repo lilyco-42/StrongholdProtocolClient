@@ -75,15 +75,16 @@ fn popup(msg: &str, icon: u32) {
     let _ = (msg, icon);
 }
 
-/// 直接声明 `MessageBoxW`，不为此加一个 windows 绑定的 crate（`#[link]` 让链接器去找 user32.lib）。
-/// extern 块放在模块顶层：`#[link]` 写在函数体里虽然通常也认，但没必要赌。
+// 直接声明 `MessageBoxW`，不为此加一个 windows 绑定的 crate（`#[link]` 让链接器去找 user32.lib）。
+// extern 块放在模块顶层：`#[link]` 写在函数体里虽然通常也认，但没必要赌。
+// 这里是 `//` 而不是 `///`：rustdoc 不给 extern 块生成文档，`///` 只会多一条 unused_doc_comments 警告。
 #[cfg(windows)]
 #[link(name = "user32")]
 extern "system" {
     fn MessageBoxW(hwnd: *mut core::ffi::c_void, text: *const u16, caption: *const u16, utype: u32) -> i32;
 }
 
-/// 单实例用的是内核的命名互斥量，同样手写声明，不加 windows crate。
+// 单实例用的是内核的命名互斥量，同样手写声明，不加 windows crate。
 #[cfg(windows)]
 #[link(name = "kernel32")]
 extern "system" {
@@ -108,7 +109,9 @@ fn already_running() -> bool {
         // 拿不到句柄说明不了"另一个实例在跑"，不能因此拒绝启动
         return false;
     }
-    unsafe { GetLastError() } == ERROR_ALREADY_EXISTS
+    // 整个比较放进 unsafe 块：`unsafe { f() } == X` 不是合法表达式（rustc 把 `unsafe {}` 当成语句，
+    // 于是报 expected expression, found `==`），第一次编译就是这么红的。
+    unsafe { GetLastError() == ERROR_ALREADY_EXISTS }
 }
 
 #[cfg(not(windows))]

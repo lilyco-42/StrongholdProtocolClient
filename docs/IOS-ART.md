@@ -95,18 +95,34 @@ run **37735653403**（2026-10-08，ubuntu-24.04，探的 ipa sha256 `41ddc05c36f
 
 | 嫌疑 | 需要什么证据 | 现在能拿到吗 |
 | --- | --- | --- |
-| **Spine 模型**在 iOS 上取 `.skel`/贴图超时或解析/上传失败 → 4 次重试后永久菱形（units.js:128/611） | 真机；或一个能在手机上打开的自检页 | 探测流水线只到"图片能取回并解码"，没走到 pixi-spine |
+| **Spine 模型**在 iOS 上取 `.skel`/贴图超时或解析/上传失败 → 4 次重试后永久菱形（units.js:128/611） | 真机；或一个能在手机上打开的自检页 | **自检页已存在**（游戏仓 `public/dev/spine-probe.html`，commit `66fb7151`），随 c27 的 payload 才到玩家手里 |
 | Capacitor iOS 的 `capacitor://localhost` 走 `WKURLSchemeHandler`，高并发请求会丢 | 真机 | 探测用的是 Node 静态服务，天生不复现这一条 |
 | 手机内存（app 落地 865 MB，WebContent 进程有上限，一局要同时挂好几个骨架） | 真机 | 同上 |
 | iOS 版本（下限 15.0 是实测值；`loading="lazy"` 到 16.4 才被理睬，之前等于忽略=照样加载） | 一句话 | 能 |
 | 现场其实是"所有图都读不到"，或者根本没进到有立绘的界面 | 一张截图 | 能 |
 
-**不改代码就能分岔的那一步**：同一台 iPhone 用 Safari 打开网页版 <https://sp.lain42.top/>，
+**自检页（现在最便宜的那一步）**：游戏仓 `public/dev/spine-probe.html` + `.js`，在手机浏览器或 app 里打开
+`/dev/spine-probe.html` 就行，它把四件事分开测、每层单独 try/catch（一层炸了不带走整页 —— 那行正是要读的东西）：
+
+1. **静态图片**（`new Image`）——玩家报"头像能显示"，所以这层必须是好的；它坏了后面三层无从谈起；
+2. **`fetch` `.skel` / `.atlas`** ——字节数、Content-Type、用的哪个 scheme，这是传输层（scheme handler / ATS）；
+3. **`assets.spine.acquire()`** ——走**生产同一条路径**（`PIXI.Assets.load` + pixi-spine），报动画个数或错误原文；
+4. **连续 acquire 多个不释放** ——内存/驱逐那一层，附带 `spine.stats()` 与 JS 堆（有的浏览器才报得出）。
+
+页顶那句结论按"哪一层先坏"给，于是 §0 那两处现场、以及上表三条嫌疑，第一次有了互相分得开的读数。
+两条对照也在：**阴性**是一个不存在的骨架，必须失败（它要是成功，上面所有"成功"都没意义），而且它从
+**真实条目改文件名**构造 —— 自造对象会被 `validSpine`（`assets.js:227`，还要求 `anims` 是对象）先拦下，
+那行报的失败就是校验器的功劳而不是加载器的；**探针自身**在 PIXI / PIXI.spine 缺失时直接把结论标成不可读。
+①②各带 12 秒超时并单独报"12 秒没回（挂住）"，因为"请求永远不返回"本身就是 iOS 上一种可能的故障形状，
+让它挂住就等于没有报告。结果同时挂在 `window.__SPINE_PROBE__`，所以 `probe-art-engines.yml` 以后能在 CI 里
+跑同一页 —— 同一份数字有真机与 CI 引擎两个来源。
+
+**不改代码也能分岔的第二步**：同一台 iPhone 用 Safari 打开网页版 <https://sp.lain42.top/>，
 分别看 干员调配 的半身立绘 和 一局战斗里的干员模型。
 
 - 两处都没有 → 与 ipa 的壳无关，问题在 iOS WebKit 配我们这套渲染（回到引擎/内存）；
 - 只有战斗里没有、详情页有 → 嫌疑集中在 Spine 那一条（`PIXI / pixi-spine` 没就绪、或骨架上传失败），
-  下一步是给 `assets.js` 的失败原因加一条能看见的出口（现在只在 console 里，手机上看不见）；
+  这时候直接开上面那个自检页读 ③④ 两行（失败原因以前只在 console 里，手机上看不见 —— 页面上现在看得见）；
 - 网页版两处都正常 → 差别就在打包壳（scheme handler / 内存），才轮到改 `server.iosScheme`。
   **不要盲改**：换 scheme 会换 localStorage 的来源，而玩家的编队自选、皮肤解锁、服务器选择都存在那里 ——
   改之前要先量清楚，改之后要验证老数据还在。
@@ -125,4 +141,14 @@ apk 就换成 `-f asset=…apk -f web_subpath=assets/public`；桌面 zip 同理
 本地想只看清单不看浏览器：`node tools/art-probe.mjs --root <解出的 web 根> --list`（128 条，65 组，
 每组按声明尺寸留最大的，所以 2048×2048 那张一定在列表里）。
 
-相关的另两份文档：`docs/PACKAGING.md`（五个形态与闸门顺序）、`docs/ANDROID-SIGNING.md`（另一条真机反馈）。
+**自检页**（四层分开测，见 §3）不需要任何工具，浏览器打开就行；本地想先看一眼：
+
+```
+cd <游戏仓> && PORT=47993 HOST=127.0.0.1 SP_NO_BROWSER=1 node server/index.js   # 只读地起一份源码服
+# 然后开 http://127.0.0.1:47993/dev/spine-probe.html
+```
+
+参数 `?ids=<chessId,…>` 指定要测的干员（默认取清单里前三个有 spine 的，按 id 排序，所以不同人报的号能对上同一批），
+`?many=<n>` 改第 ④ 层的数量。它随 payload 进 app，因此**要到 c27 之后**玩家那边才点得开。
+
+相关的另两份文档：`docs/PACKAGING.md`（五个形态与闸门顺序、§17 网友服复测、§18 F11）、`docs/ANDROID-SIGNING.md`（另一条真机反馈）。

@@ -193,14 +193,35 @@ export function parseArgv(argv) {
   const targets = [{ name: '对照 · 官方服', address: arg('--control', 'https://sp.lain42.top'), control: true }];
   for (const s of COMMUNITY_SERVERS) targets.push({ ...s, seeded: true });
   const bad = [];
+  const dupes = [];
+  // Same rule the picker uses: two spellings of one server are one server, so a candidate that is already in the
+  // list (or repeated on the command line) is reported once rather than shifting the alive/dead counts.
+  const seen = new Map();
+  for (const t of targets) seen.set(toWsUrlSafe(t.address), t.address);
   for (let i = argv.indexOf('--add'); i >= 0; i = argv.indexOf('--add', i + 1)) {
     const val = argv[i + 1];
     if (!val || val.startsWith('--')) break;
     const eq = val.indexOf('=');
     if (eq <= 0) { bad.push(val); continue; }
-    targets.push({ name: val.slice(0, eq), address: val.slice(eq + 1), seeded: false });
+    const entry = { name: val.slice(0, eq), address: val.slice(eq + 1), seeded: false };
+    const key = toWsUrlSafe(entry.address);
+    if (seen.has(key)) {
+      dupes.push(`${entry.name}（${entry.address}）与已有的 ${seen.get(key)} 是同一台，跳过`);
+      continue;
+    }
+    seen.set(key, entry.address);
+    targets.push(entry);
   }
-  return { targets, bad, timeoutMs: Number(arg('--timeout', 8000)), name: arg('--name', '探针') };
+  return { targets, bad, dupes, timeoutMs: Number(arg('--timeout', 8000)), name: arg('--name', '探针') };
+}
+
+/** `toWsUrl` accepts anything, so dedup keys are computed with it but never allowed to throw the report apart. */
+function toWsUrlSafe(address) {
+  try {
+    return addressError(address) ? `!${address}` : toWsUrl(address);
+  } catch {
+    return `!${address}`;
+  }
 }
 
 /** The ranking rules, split from the printing so a test can assert them without touching a socket. */
@@ -221,8 +242,9 @@ export function summarize(results) {
 }
 
 async function main() {
-  const { targets, bad, timeoutMs, name } = parseArgv(process.argv.slice(2));
+  const { targets, bad, dupes, timeoutMs, name } = parseArgv(process.argv.slice(2));
   for (const v of bad) console.error(`--add 要写成 '名字=地址'，收到：${v}`);
+  for (const d of dupes) console.error(`跳过：${d}`);
   let frame;
   try {
     frame = helloFrame({ name });
@@ -240,7 +262,11 @@ async function main() {
     // Under a TUN proxy the resolved address belongs to the proxy itself, so *every* per-host diagnostic on this
     // row — TCP reachability included — measures the proxy, not that server.
     const poisoned = FAKE_IP.test(r.ip);
-    if (!poisoned && r.tcp === 'TCP 通' && r.verdict === '连不上') console.log('     ← TCP 通而 WS 挂：本机出口问题，不是对方宕机');
+    // On a clean vantage this combination is a finding about *them*: something answers the port (a reverse proxy)
+    // and refuses the `/ws` upgrade, which is what a stopped game process behind a live nginx looks like.
+    if (!poisoned && r.tcp === 'TCP 通' && r.verdict === '连不上') {
+      console.log('     ← 端口在听但 /ws 握手被拒：反代活着、游戏进程大概率不在了（换 vantage 复测一次再删条目）');
+    }
     console.log(`${tag}  ${(r.name || '').padEnd(24)} ${r.verdict.padEnd(22)} app=${(r.app || '—').padEnd(9)} ${String(r.ms).padStart(5)} ms  ${r.ws}${r.ip ? ` → ${r.ip}` : ''}${r.tcp ? ` [${r.tcp}${poisoned ? '·代理自身' : ''}]` : ''}${poisoned ? ' ← 代理假 IP，本行不可信' : ''}${r.detail ? `   (${r.detail})` : ''}`);
   }
 

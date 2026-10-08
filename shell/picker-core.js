@@ -21,13 +21,22 @@ export const BUILTIN_SERVERS = Object.freeze([
 ]);
 
 /** Bump when COMMUNITY_SERVERS gains an entry existing installs should also get (a deleted one stays deleted). */
-export const SEED_VERSION = 2;
+export const SEED_VERSION = 3;
 
 /**
- * Servers run by other people, measured with the shipped picker code on 2026-10-05 and re-measured on 2026-10-06
- * (all eight opened a `/ws` handshake and answered `hello` with `welcome`; `ark-proto.stardust.matce.cn` answers
- * HTTP but its `/ws` is refused with 403 — it gates the page behind a play code first — and
- * `xymx1234.github.io/stronghold-standalone/` is a static page, not a server, so neither is listed here).
+ * Servers run by other people. The bar for being listed is protocol-level, not socket-level: `hello` must come back
+ * as `welcome` (`tools/probe-community-servers.mjs`), because any reverse proxy answers a `wss` handshake
+ * with 101 and then has nothing behind it.
+ *
+ * Measured 2026-10-05 and 2026-10-06 with the shipped picker code (then eight of eight answered `welcome`), and
+ * re-measured 2026-10-08 from two vantages — a GitHub Actions runner (clean egress) and this machine (behind a TUN
+ * proxy, which fabricates failures for every proxied hostname). Both vantages agree on `linxia` / `nekotc` /
+ * `chiruno` / `ausevaywstr` / `103.205.253.194` answering `welcome`. `183.66.27.19:20522` answers from here but its
+ * port does not answer from overseas, so it stays on the strength of the direct measurement. Five rows
+ * (`misyra`, `rainya`, `rainya:10166`, `xiaolubao`, `cranepaul`) did not answer from either vantage on 10-08 —
+ * **kept anyway, deliberately**: a dead row is one grey line the player can delete, while a deleted row is
+ * invisible to every new install, and one measurement window is thin evidence about someone else's server.
+ * Re-run the probe from a second mainland vantage before removing any of them.
  *
  * They are *seeded into the editable list* (`K_LIST`), not added to `BUILTIN_SERVERS`: a server that goes dark must
  * be something the player can delete for good, and a built-in row cannot be deleted or edited. Addresses below are
@@ -49,6 +58,9 @@ export const COMMUNITY_SERVERS = Object.freeze([
   // 裸 IP + http：`addressError` 允许 host:port，Android 是 usesCleartextTraffic="true"、iOS ATS 也放开，
   // 所以三端都能连（实测 ws://183.66.27.19:20522/ws 回 welcome）。
   { name: '网友服 · 183.66.27.19', address: 'http://183.66.27.19:20522/' },
+  // 2026-10-08 新增：两个出口都实测回 welcome（GitHub Actions 的海外 runner 1440 ms、本机 53 ms），所以这条是
+  // 双 vantage 通过的。评论区说它带自己的匹配队列 —— 那是服主的功能，本客户端没有实测，名字里只写主机。
+  { name: '网友服 · 103.205.253.194', address: 'http://103.205.253.194:27527/' },
   // cranepaul 群里发的是 https://game.cranepaul.dpdns.org/，但它把 /ws 301 到 sk.…:8443/ws，
   // 而 WebSocket 握手不跟随重定向 —— 填 game. 那个必然连不上，所以这里播种它自己的规范地址。
   { name: '网友服 · cranepaul', address: 'https://sk.cranepaul.dpdns.org:8443/' },

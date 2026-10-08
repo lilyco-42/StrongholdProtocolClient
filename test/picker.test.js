@@ -13,6 +13,9 @@ import {
   addressError, ambiguousScheme, autostartOn, cleanName, customFrom, isAndroidUA, isPickerHotkey, missingSeeds, orderCandidates,
   otherScheme, pathOf, probeReason, rootWsUrl, serverName, shouldShowPicker,
 } from '../shell/picker-core.js';
+// `picker.js` deduplicates seeds with `js/net.js`'s `toWsUrl`; `tools/ws-url.mjs` is the pinned copy of it
+// (test/ws-url.test.js), so using it here is the same key the shipped picker computes.
+import { toWsUrl } from '../tools/ws-url.mjs';
 
 describe('when the picker is shown', () => {
   test('first launch (nothing remembered) always asks', () => {
@@ -135,6 +138,18 @@ describe('the seeded fan-server list', () => {
       assert.ok(!seen.has(e.address), `${e.address} listed twice`);
       seen.add(e.address);
     }
+  });
+
+  test('no two seeded rows normalise to the same socket URL', () => {
+    // `addressError`-clean and literally unique is not enough: the picker deduplicates on the *socket* URL, so two
+    // spellings of one server would show as two rows and seed twice for a player who typed a third spelling.
+    const keys = new Map();
+    for (const e of COMMUNITY_SERVERS) {
+      const k = toWsUrl(e.address);
+      assert.ok(!keys.has(k), `${e.address} 与 ${keys.get(k)} 都归一成 ${k}`);
+      keys.set(k, e.address);
+    }
+    assert.equal(keys.size, COMMUNITY_SERVERS.length);
   });
 
   test('the two measured-dead addresses stay out of the list', () => {

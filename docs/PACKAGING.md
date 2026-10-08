@@ -262,7 +262,7 @@ media-alias flag 有写、**签名是关的**、共享 scheme 在库里、`Info.
 | 多人页 | 服务器列表 + **添加服务器**（名称 + 地址）、**直接连接**（只填地址，不进列表；先用探测选通用那条地址再进入）、**编辑**（改选中的自建服务器；内置与打包默认服不可改）、**刷新**（重新测一遍所有延迟，放在"返回"左边）、**返回** |
 | 地址写法 | `host`、`host:port`、`http(s)://…`、`ws(s)://…`，不用手写协议：不带协议时带端口的按 `ws://` 猜（`:443` 除外），公网域名默认 `wss://`。候选 = **协议 × 路径**：`toWsUrl()` 保留粘贴的路径（`https://host/play` → `wss://host/play/ws`），`picker-core.js` 的 `orderCandidates()` 再补上根挂载那条（`wss://host/ws`），地址没写协议时两种协议都补，最多 4 条。命中后把**通了的那条**存进 `sp.shell.server`（`ambiguousScheme` 决定哪些地址需要双协议，`pathOf` 决定失败文案提不提路径） |
 | 列出的服务器 | 内置项只有 `本机 / 局域网 localhost:3000`（`shell/picker-core.js` 的 `BUILTIN_SERVERS`，给自己开服的人）；`--server` 打包指定的地址会标"默认"并排在前面（**当前发布的产物是 `sp.lain42.top`**）；玩家自己添加的服务器（按 `js/net.js` 的 `toWsUrl()` 归一化，存在客户端本地；旧的"只存地址字符串"列表在读取时会升级成 `{name, address}`） |
-| 网友服播种 | `picker-core.js` 的 `COMMUNITY_SERVERS`（每条 `{name, address}`，只收实测 `/ws` 握手成功过的地址；`test/picker.test.js` 钉住"表里不许出现已测死的 host"）由 `picker.js` 的 `seedCommunityServers()` 在模块加载时写进 `K_LIST`，并写 `sp.shell.seed = SEED_VERSION`。三个要点：① **播种到可删列表而不是 BUILTIN_SERVERS** —— 别人的服会关，玩家必须删得掉，内置项不给删；② 有标记才不会把删掉的那条又种回来（要推新一批就升 `SEED_VERSION`）；③ 去重键由调用方注入（传 `toWsUrl`），所以玩家自己手填过同一个服就不会重复。种子跑在覆盖层不显示的那条路径上，F2 打开时看到的是同一份列表 |
+| 网友服播种 | `picker-core.js` 的 `COMMUNITY_SERVERS`（每条 `{name, address}`，收条目的门槛是**协议层**的 `hello`→`welcome`，不是 `/ws` 握手成功过 —— 见 §17；`test/picker.test.js` 钉住"表里不许出现已测死的 host"、地址能被 `addressError` 接受、而且没有两行归一成同一个 socket URL）由 `picker.js` 的 `seedCommunityServers()` 在模块加载时写进 `K_LIST`，并写 `sp.shell.seed = SEED_VERSION`。三个要点：① **播种到可删列表而不是 BUILTIN_SERVERS** —— 别人的服会关，玩家必须删得掉，内置项不给删；② 有标记才不会把删掉的那条又种回来（要推新一批就升 `SEED_VERSION`）；③ 去重键由调用方注入（传 `toWsUrl`），所以玩家自己手填过同一个服就不会重复。种子跑在覆盖层不显示的那条路径上，F2 打开时看到的是同一份列表 |
 | 探测 | 直接开 `/ws`（和游戏同一条通道，因此不依赖服务器 CORS），4 条候选**同时**开，一轮结束后最佳猜测重试一次 → 死地址约 2×`PROBE_TIMEOUT_MS`（8 s）出结果；绿点 = 真的能连进去。握手失败在浏览器里拿不到原因，所以 `/healthz` 会用 `mode: 'no-cors'` 再问一次（它对任何 HTTP 状态都 resolve，只有主机没答才 reject）：答了 → 卡片写"对方在线，但 `/ws` 没通"（`probeReason`），没答 → 保持"无法连接"（安卓壳拦明文 `http://`，不能据此断言主机无响应）。服务器给了 `Access-Control-Allow-Origin` 还能读 JSON，显示 `v<app> · 在线 n · 房间 n`； socket 失败时会等 `/healthz` 落定再收（等不到就按 `PROBE_TIMEOUT_MS` 截止），否则秒断的握手永远抢在那句结论前面 |
 | 记住上次 | 桌面端勾"记住并直接进入"后下次直接进游戏；想换服务器按 **F2**，或用 `--choose-server` 启动。Android 没有 F2，所以每次都显示、默认不记住（否则玩家换了服务器就回不去了） |
 | 优先级 | `--server <地址>`（本次运行）> `?server=<地址>` > 菜单记住的地址 > 打包默认地址 |
@@ -548,3 +548,58 @@ c26 起用 `--latest=false` 创建，并且每次发完都要用 `gh release lis
 
 没做的两条也记在这儿：**F11 全屏**仍然只在 Electron 的原生层有（要页面能调壳的能力，等于必须重切 payload，
 见任务里的说明）；第二次双击仍然只提示、不把已开的窗口抬到前面（那需要跨进程喊话 + 一次主线程调用）。
+
+## 17. 网友服复测：门槛是 `hello`→`welcome`，而且要两个出口
+
+`tools/probe-community-servers.mjs` 把"这台是不是真的还在跑 Stronghold"变成一条能重跑的测量。它只做一件事：
+开一条 `/ws`，发一个 `hello`，读回帧，然后关掉 —— 不进房、不发别的动词、不拉字节。
+
+**为什么不能只看握手**：任何反向代理都会回 `101`，源站没了也照样回。所以判定只有一个 —— 服务器在 `hello` 之后
+回 `welcome`。
+
+**探针自己必须先是对的**，否则健康的服务器会把它读成客户端坏了。三条来自游戏仓的规则：
+
+- `rid` 给了就必须是**整数**（`shared/protocol.js:435`）—— 这次最初写的是 `rid: 'probe1'`，于是**每台**健康服务器
+  都回 `BAD_MSG`，本机报出「10 台全死」。改成 `rid: 1` 之后，之前显示"被拒"的五台全部回 `welcome`。
+- `name` 非空且 ≤ `NAME_MAX_LEN = 12`（`shared/constants.js:22`，`validateC2S` 用 `v.length`，一个汉字算 1）。
+  默认名因此是「探针」而不是「探针 · 只测连接」。
+- 拒绝的原因在 error 帧的 **`detail`** 里（`server/net.js:328` 的 `errorMsg(code, rid, detail)`），`code` 只是
+  `BAD_MSG` 这种机器码。原来只打印 `code`，等于把唯一那句诊断丢掉。
+
+`--control`（默认官方服）是**阳性对照**：它证明发出去的帧本身合法，所以对照失败时整张表的排名不作数（`exit 1`）。
+`test/probe-community-servers.test.js` 里那三条阴性对照跑的是一个手写的 RFC 6455 服务端（不是探针自己的代码）：
+按协议回 `welcome` ⇒ 必须报 `welcome` 并带 `app`；回 `BAD_MSG` ⇒ `verdict` 与 `detail` 都要能看出是被拒；只握手
+不回帧 ⇒ 报超时而不是 `welcome`。另外端口没人听时 `TCP:ECONNREFUSED` 会出现在诊断列里 —— WebSocket 的 `error`
+事件不带原因，所以 `连不上（error）` 那句话本来是没信息量的。
+
+**出口（vantage）和帧一样重要。** 本机走 TUN 代理，代理给每个域名发一个 `198.18.0.x` 的假 IP：这一行里所有诊断
+（连 TCP 通不通）都只是在描述代理自己，所以工具直接把解析到的 IP 打出来并标「本行不可信」。2026-10-08 两个出口的
+实测：
+
+| 条目 | GitHub runner（海外，干净出口） | 本机（代理） | 处理 |
+|---|---|---|---|
+| 对照 `sp.lain42.top` | `welcome` 5358 ms（→ 8.153.102.122） | `welcome`（本地源码服的阳性对照 17 ms） | — |
+| linxia / nekotc / chiruno / ausevaywstr | `welcome` 1076–8395 ms | `welcome` 561–1387 ms | 保留（两个出口都通过） |
+| **103.205.253.194:27527** | `welcome` 1440 ms | `welcome` 53 ms | **本次新增**，`SEED_VERSION` 2→3 |
+| 183.66.27.19:20522 | `TCP 超时` 15496 ms | `welcome` 108 ms | 保留 —— 海外连不到那个端口，直连 IP 那一侧是有效测量 |
+| misyra / rainya / xiaolubao | `TCP 通`但 `/ws` 握手被拒 | 连不上（假 IP） | 保留，但**记下待复测** |
+| rainya:10166 | `TCP 超时` | 连不上（假 IP） | 同上 |
+| cranepaul:8443 | `TLS:ERR_SSL_TLSV1_UNRECOGNIZED_NAME` | 同错（假 IP） | 同上 |
+
+那四行"沉默"的条目**没有删**，理由是后果不对称：列表里一行死的服务器只是玩家看到的一个灰点、而且他自己删得掉；
+删掉一行则所有新装玩家再也看不见它。而"从海外 runner 连不到一台中国大陆的服务器"根本不是对方宕机的证据。要删就得
+再有一个大陆出口复测一次（线上那台机器可以，但那要动服务器，先不做）。
+
+重跑：
+
+```bash
+node tools/probe-community-servers.mjs --timeout 6000                  # 本机（看每行解析到的 IP 才知可信度）
+node tools/probe-community-servers.mjs --control http://127.0.0.1:<本地源码服端口>   # 阳性对照，不依赖外网
+gh workflow run probe-servers.yml -R lilyco-42/StrongholdProtocolClient --ref main \
+  -f timeout_ms=12000 -f 'extra=网友服 · foo=https://foo.example/'        # 干净出口；红的是测量结果，不是流水线坏了
+```
+
+**`tools/ws-url.mjs` 现在是被钉住的逐字拷贝**。它是播种条目的去重键（`picker.js` 把 `js/net.js` 的 `toWsUrl` 注入
+`missingSeeds`），而它原来是对补丁里那段代码的改写版 —— 改写版把不带端口的 `[::1]` 归一成 `wss://`，补丁里的代码
+给出 `ws://`。`test/ws-url.test.js` 从 `patches/game-client.patch` 重新抽出新增行、逐个函数按文本比对，再让两份
+实现跑同一批输入对答案；`test/picker.test.js` 另外钉住"没有两行种子归一成同一个 socket URL"。

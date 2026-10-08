@@ -19,6 +19,7 @@ import {
   NAME_MAX_LEN, PROTOCOL_VERSION, FAKE_IP,
   helloFrame, describeFrame, probe, summarize, parseArgv, resolvedIp,
 } from '../tools/probe-community-servers.mjs';
+import { COMMUNITY_SERVERS } from '../shell/picker-core.js';
 
 const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
@@ -203,9 +204,21 @@ test('parseArgv：--add 是候选、坏格式被单独收集，且对照永远�
   assert.equal(p.timeoutMs, 1234);
   assert.equal(p.name, '探针');
   assert.deepEqual(p.bad, ['没有等号']);
+  assert.deepEqual(p.dupes, []);
   assert.equal(p.targets[0].control, true);
   const last = p.targets[p.targets.length - 1];
   assert.deepEqual({ name: last.name, address: last.address, seeded: last.seeded }, { name: '网友服 · foo', address: 'https://foo.example/', seeded: false });
+});
+
+test('候选里重复已有条目（或彼此重复）不会把存活/死亡数算歪 —— 去重键和 picker 用同一个', () => {
+  const seededOne = COMMUNITY_SERVERS[0];
+  const p = parseArgv(['--add', `网友服 · 重复=${seededOne.address}`]);
+  assert.equal(p.dupes.length, 1, `同一台服务器该被认出来：${seededOne.address}`);
+  assert.ok(p.dupes[0].includes(seededOne.address));
+  assert.equal(p.targets.filter((t) => t.address === seededOne.address).length, 1, '重复条目不进目标表');
+  const twice = parseArgv(['--add', '网友服 · a=https://a.example/', '--add', '网友服 · b=https://a.example/']);
+  assert.equal(twice.targets.filter((t) => t.address === 'https://a.example/').length, 1);
+  assert.equal(twice.dupes.length, 1);
 });
 
 test('FAKE_IP 只圈住 198.18.0.0/15 —— 那是 TUN 代理的地址段，不是公网', () => {

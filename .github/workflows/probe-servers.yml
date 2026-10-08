@@ -1,0 +1,72 @@
+name: probe-servers
+
+# 网友服活不活 —— 一条能在干净出口上重跑的测量。
+#
+# 为什么要跑在 runner 上而不是本机：本机走 TUN 代理，代理会给每个域名发一个 198.18.0.x 的假 IP，
+# 于是「连不上」和「TCP 通」都只是在描述代理自己。2026-10-08 实测：同一批 10 条种子，本机报
+# 5 台连不上且全部解析到假 IP，而 GitHub runner 上的结果才算数（docs/SERVERS.md 的播种前提是协议层
+# hello→welcome，见任务 #61）。
+#
+# 探针发出去的帧必须自己先是对的，否则每台健康的服务器都会回 BAD_MSG，把探针的 bug 读成「网友服全死了」：
+# `rid` 要是整数（游戏仓 shared/protocol.js:435）、`name` 不超过 NAME_MAX_LEN=12、拒绝原因在 error 帧的
+# `detail` 里（server/net.js:328）而不是 `code`。对照条目（--control，默认官方服）就是这三条的阳性对照：
+# 对照失败 ⇒ 这张表一个排名都不作数。
+#
+# 退出码：0 = 种子全通；1 = 有种子不回 welcome 或对照失败（这正是测量结果）；2 = 探针跑不起来（Node 太老）。
+# 红色不是流水线坏了，是这个列表需要改 —— 日志里会点名是哪几条。
+
+on:
+  workflow_dispatch:
+    inputs:
+      timeout_ms:
+        description: '每台等待 welcome 的毫秒数（跨境链路要放宽）'
+        required: false
+        default: '12000'
+      control:
+        description: '阳性对照地址（已知会回 welcome 的服务器）'
+        required: false
+        default: 'https://sp.lain42.top'
+      extra:
+        description: '候选地址，每行一条 "名字=https://host/"，不影响退出码'
+        required: false
+        default: ''
+
+concurrency:
+  group: probe-servers-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # 全局 WebSocket 需要 Node ≥ 22.4；探针只碰网络，不装任何依赖。
+          node-version: '22'
+
+      - name: 出口自检（先确认这不是代理污染的环境）
+        run: |
+          set -euo pipefail
+          node -e 'const a=require("os").networkInterfaces();for(const[n,l]of Object.entries(a))for(const x of l)if(x.family==="IPv4")console.log(n,x.address)'
+          getent hosts sp.lain42.top || echo "（本机解析不到 sp.lain42.top）"
+
+      - name: 探测种子列表（hello→welcome）
+        env:
+          TIMEOUT: ${{ inputs.timeout_ms }}
+          CONTROL: ${{ inputs.control }}
+          EXTRA: ${{ inputs.extra }}
+        run: |
+          set -euo pipefail
+          args=(--timeout "$TIMEOUT" --control "$CONTROL")
+          # 多行输入按行拆成多个 --add；空行与注释行跳过，避免把 "名字=地址" 拆坏。
+          while IFS= read -r line; do
+            case "$line" in
+              ''|'#'*) continue ;;
+              *) args+=(--add "$line") ;;
+            esac
+          done <<< "$EXTRA"
+          printf '参数：%q ' "${args[@]}"; echo
+          node tools/probe-community-servers.mjs "${args[@]}"

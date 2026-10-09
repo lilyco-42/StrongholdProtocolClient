@@ -91,8 +91,10 @@ jobs:
             run="${pair%%:*}"; name="${pair##*:}"
             # 每个 artifact 单独下：`gh run download` 不带 -n 会把几个 artifact 摊平到同一层，
             # 于是"哪个文件来自哪条流水线"这条线索就没了。
+            # -R 是必需的：这条 lane 没有 checkout 步骤，工作目录不是 git 仓库，
+            # `gh run download` 会先跑 `git rev-parse` 推断仓库然后直接死在 "not a git repository"（实测）。
             echo "--- $name (run $run)"
-            gh run download "$run" -n "$name" -D "out/$name"
+            gh run download "$run" -n "$name" -D "out/$name" -R "$GITHUB_REPOSITORY"
             find "out/$name" -maxdepth 1 -type f -printf '%f\t%s B\n'
           done
           echo "共 $(find out -type f | wc -l) 个文件，$(du -sh out | cut -f1)"
@@ -130,7 +132,7 @@ jobs:
           find out -type f -print0 | sort -z | xargs -0 -n1 sha256sum | tee /tmp/local.sha256
           # 先只建 Release（--draft），再一个一个传：一次传六个大文件被外层超时杀过，
           # 那次的结果是 tag_name 已经写进 Release、assets 却是 0，`gh release view <tag>` 反而查得到。
-          gh release create "$TAG" --draft --title "${{ inputs.title }} $TAG" --notes-file "$NOTES"
+          gh release create "$TAG" --draft --title "${{ inputs.title }} $TAG" --notes-file "$NOTES" -R "$GITHUB_REPOSITORY"
           find out -type f -print0 | sort -z | while IFS= read -r -d '' f; do
             echo "--- 传 $(basename "$f")"
             gh release upload "$TAG" "$f" --clobber -R "$GITHUB_REPOSITORY"

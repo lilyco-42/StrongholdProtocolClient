@@ -13,7 +13,7 @@ import path from 'node:path';
 import http from 'node:http';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { buildArtCases, mimeFor, readManifests, startProbeServer } from '../tools/art-probe.mjs';
+import { buildArtCases, mimeFor, pageUrlOf, readManifests, startProbeServer } from '../tools/art-probe.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const TOOLS = path.join(path.dirname(HERE), 'tools');
@@ -189,6 +189,25 @@ test('the probe page measures the four things the driver compares', () => {
   for (const marker of ['eager', 'lazy', 'scrolled', 'rerender', '__control__', 'droppedErrored']) {
     assert.ok(html.includes(marker), `the page no longer reports ${marker}`);
   }
+});
+
+// CI 第一次跑 spine 驱动就是死在这一条上：拼出来的地址有双斜杠，服务端把 `//dev/...` 当协议相对地址解，
+// 于是包内明明有的自检页答 404，两个引擎各白等满超时。这条把它钉住（纯字符串，任何机器都跑）。
+test('pageUrlOf builds a path inside the tree, never a protocol-relative URL', () => {
+  const S = 'http://127.0.0.1:40171/__art_probe__';
+  assert.equal(pageUrlOf({ serverUrl: S, pagePath: '/dev/spine-probe.html' }), 'http://127.0.0.1:40171/dev/spine-probe.html');
+  assert.equal(pageUrlOf({ serverUrl: S, pagePath: 'dev/spine-probe.html', query: 'many=8' }), 'http://127.0.0.1:40171/dev/spine-probe.html?many=8');
+  assert.equal(pageUrlOf({ serverUrl: S, pagePath: '/dev/x.html', query: '?ids=112' }), 'http://127.0.0.1:40171/dev/x.html?ids=112');
+  for (const u of [
+    pageUrlOf({ serverUrl: S, pagePath: '/dev/spine-probe.html', query: 'many=8&ids=1,2' }),
+    pageUrlOf({ serverUrl: S, pagePath: '/a/b.html' }),
+  ]) {
+    assert.ok(!/\/\//.test(u.slice(u.indexOf('://') + 3)), `${u} 里还有第二个斜杠 —— 服务端会把它解成协议相对地址`);
+  }
+  // 而且服务端真的要把它当路径解：pathname 必须是那一页，host 必须还是 127.0.0.1
+  const parsed = new URL(pageUrlOf({ serverUrl: S, pagePath: '/dev/spine-probe.html' }));
+  assert.equal(parsed.hostname, '127.0.0.1');
+  assert.equal(parsed.pathname, '/dev/spine-probe.html');
 });
 
 // spine-probe-check.mjs 的两种「测不了」必须与「测出来了」区分开：它用退出码 2 表示探针本身不成立，

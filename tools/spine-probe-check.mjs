@@ -25,7 +25,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { startProbeServer } from './art-probe.mjs';
+import { pageUrlOf, startProbeServer } from './art-probe.mjs';
 
 const argv = process.argv.slice(2);
 const arg = (name, dflt = null) => {
@@ -58,7 +58,9 @@ try {
 // The page lives inside the served tree (that is the point: it must load the payload's own modules), so the probe
 // server's injected copy doubles as the existence check above.
 const server = await startProbeServer({ root, probeHtml: PAGE, cases: [] });
-const pageUrl = `${server.url.replace(/__art_probe__$/, '')}${pagePath}${qs.toString() ? `?${qs}` : ''}`;
+// pageUrlOf 而不是字符串拼接：`http://host:P` + `/dev/...` 拼出双斜杠时，服务端的 `new URL(req.url, base)`
+// 会把它当协议相对地址（host 变成 "dev"），于是包内明明有的那一页答 404（CI 第一次跑就是这样）。
+const pageUrl = pageUrlOf({ serverUrl: server.url, pagePath, query: qs.toString() });
 console.log(`[spine-probe-check] ${pageUrl}  root=${root}`);
 
 /** Rows the gate compares: everything about *getting the art and parsing it*, plus the control. */
@@ -79,6 +81,15 @@ async function runEngine(name) {
     page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text().slice(0, 200)); });
     page.on('pageerror', (e) => consoleErrors.push('pageerror: ' + String(e.message || e).slice(0, 200)));
     const resp = await page.goto(pageUrl, { waitUntil: 'domcontentloaded' });
+    // 文档本身不是 200 就立刻收：那一页没打开，等多久都不会有结论，而白等 5 分钟 × 2 个引擎会把这条 lane 的
+    // 一次"配置错了"变成十分钟的等待（CI 第一次跑就是这样）。
+    const status = resp ? resp.status() : 0;
+    if (status !== 200) {
+      return {
+        name, httpStatus: status, done: false, rows: [], consoleErrors: [],
+        fatal: `打开 ${pageUrl} 得到 HTTP ${status || '无响应'} —— 文档本身就没起来，后面不必等`,
+      };
+    }
     const deadline = Date.now() + WAIT_MS;
     let done = false;
     for (;;) {

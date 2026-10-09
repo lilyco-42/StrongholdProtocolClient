@@ -176,6 +176,25 @@ export function readManifests(root) {
 }
 
 /**
+ * Build the URL of a page that lives **inside the served tree**, given the probe server's own URL.
+ *
+ * Not string concatenation: the server decodes with `new URL(req.url, base)`, and a request line of
+ * `//dev/spine-probe.html` is *protocol-relative* to that parser — host becomes "dev", pathname becomes
+ * `/spine-probe.html`, and a file that is verifiably in the tree answers 404. Measured on CI 2026-10-09, where it
+ * cost two engines × the full wait timeout before the log said `HTTP 404`.
+ *
+ * @param {{ serverUrl: string, pagePath: string, query?: string }} o  `pagePath` must start with `/`
+ * @returns {string}
+ */
+export function pageUrlOf({ serverUrl, pagePath, query = '' }) {
+  const base = new URL(serverUrl);
+  const u = new URL(pagePath.startsWith('/') ? pagePath : `/${pagePath}`, base.origin);
+  const q = query.startsWith('?') ? query.slice(1) : query;
+  if (q) u.search = q;
+  return u.toString();
+}
+
+/**
  * @param {{ root: string, probeHtml: string, cases: any[], port?: number }} o
  * @returns {Promise<{ url: string, port: number, close: () => Promise<void> }>}
  */

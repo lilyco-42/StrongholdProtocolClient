@@ -1,0 +1,45 @@
+name: ci
+
+# 本仓库自己的套件跑在 runner 上。
+#
+# 为什么单独一条:产物流水线(`build-clients.yml` / `build-tauri.yml`)是 workflow_dispatch + tag 触发的,
+# **从来不含 `npm test`**。这不是假设 —— `test/packaging.test.js` 曾经在 HEAD 上红着过了好几轮发布,因为
+# 补丁从 6 个 hunk 变成 7 个而没人跑;那条断言只有跑起来才有意义。所以每个 push 都要跑一次全量。
+#
+# 套件是依赖零的(`node --test`,不需要 npm install 任何测试框架),装依赖只为 `node --check` 之外的
+# 那几条用到 playwright 的用例(它们自己会 skip)。
+
+on:
+  push:
+    branches:
+      - main
+      - feat/payload-assets
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: npm test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # 探针页与 `globalThis.WebSocket`(tools/probe-community-servers.mjs)要 Node ≥ 22.4。
+          node-version: '22'
+
+      - name: npm test
+        run: npm test

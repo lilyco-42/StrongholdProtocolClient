@@ -72,7 +72,9 @@ jobs:
           # gh 在没有 token 的 step 里报 "could not find any host configurations":默认 workflow token 不自动
           # 出现在环境里,必须显式给。仓库是公开的,这个 token 只是让 gh 能说话。
           mkdir -p "$RUNNER_TEMP/payload"
-          gh release download "$REL" -D "$RUNNER_TEMP/payload" -p '*.tar.gz'
+          # -R 是必需的:上一步 checkout 的是游戏仓,gh 会从当前目录的 git remote 推断仓库,
+          # 不带 -R 就去游戏仓找这个 Release —— 实测报 "release not found"。
+          gh release download "$REL" -R lilyco-42/StrongholdProtocolClient -D "$RUNNER_TEMP/payload" -p '*.tar.gz'
           tar=$(ls "$RUNNER_TEMP/payload"/*.tar.gz | head -1)
           echo "素材来自 $tar"
           mkdir -p "$RUNNER_TEMP/www"
@@ -84,7 +86,8 @@ jobs:
               cp -a "$RUNNER_TEMP/www/$d/." "public/$d/"
             fi
           done
-          [ -f "$RUNNER_TEMP/www/data/local-assets.json" ] && cp "$RUNNER_TEMP/www/data/local-assets.json" data/local-assets.json
+          # 用 if 而不是 "[ -f … ] && cp":前者在文件不存在时返回非零,配合 set -e 会静默杀死这一步。
+          if [ -f "$RUNNER_TEMP/www/data/local-assets.json" ]; then cp "$RUNNER_TEMP/www/data/local-assets.json" data/local-assets.json; fi
           # 按输出验收,不看退出码:拷了 0 个文件的 cp 也是 0 退出。
           A=$(find public/assets -type f | wc -l); V=$(find public/vendor -type f | wc -l); F=$(find public/fonts -type f | wc -l)
           echo "素材文件数 assets=$A vendor=$V fonts=$F"

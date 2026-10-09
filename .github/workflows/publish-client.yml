@@ -187,19 +187,30 @@ jobs:
           set -euo pipefail
           TAG="${{ inputs.tag }}"
           # 只看资产列表看不出某一条腿是 404：c2* 那次就有一条 URL 静默 404，列表里它照样在。
-          gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets \
-            --jq '.assets[].browser_download_url' > /tmp/urls.txt
-          total=$(wc -l < /tmp/urls.txt)
+          # 用 `gh api` 而不是 `gh release view --json assets --jq '.assets[].browser_download_url'`：
+          # 后者的 `assets` 字段表里根本没有 browser_download_url，jq 于是每行输出 `null`，
+          # curl 拿着 "null" 当 URL 退 3（实测 2026-10-09，红的正是这条核对本身）。
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" \
+            --jq '.assets[] | "\(.name)\t\(.browser_download_url)"' > /tmp/urls.tsv
+          total=$(wc -l < /tmp/urls.tsv)
+          test "$total" -ge 6 || { echo "Release 里只有 $total 条资产，少于六个形态"; exit 1; }
+          if [ "${{ inputs.as_draft }}" = 'yes' ]; then
+            # Draft 的资产 URL 只有带 token 才取到，所以"匿名 200"这一条在 draft 模式下永远红 ——
+            # 上一版就是把它当无条件闸门，于是自己把自己判死了。draft 阶段改为带 token 的 HEAD（证明资产真的挂上去了、
+            # 字节数对得上），匿名那条腿留到 `gh release edit --draft=false` 之后再量。
+            while IFS=$'\t' read -r name url; do
+              code=$(curl -sIL -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $GH_TOKEN" "$url")
+              echo "HTTP $code (带 token)  $name"
+              test "$code" = '200' || { echo "  ↑ draft 资产取不到"; exit 1; }
+            done < /tmp/urls.tsv
+            echo "draft：$total 条资产都在，且带 token 可取。发布（--draft=false）之后再做匿名核对。"
+            exit 0
+          fi
           ok=0
-          while IFS= read -r u; do
-            code=$(curl -sIL -o /dev/null -w '%{http_code}' "$u")
-            echo "HTTP $code  $u"
+          while IFS=$'\t' read -r name url; do
+            code=$(curl -sIL -o /dev/null -w '%{http_code}' "$url")
+            echo "HTTP $code  $name  $url"
             if [ "$code" = '200' ]; then ok=$((ok+1)); else echo "  ↑ 这一条取不到"; fi
-          done < /tmp/urls.txt
+          done < /tmp/urls.tsv
           echo "可匿名下载：$ok/$total"
           test "$ok" -eq "$total" || { echo "有资产取不到 —— 这个 Release 还不算发出去"; exit 1; }
-          # Draft 的资产只有带 token 才拿得到，所以这一步在 draft 模式下"全 404/403"是预期内的：
-          # 用它来确认状态与 as_draft 是否一致，别让一次 Draft 看起来像发布成功。
-          if [ "${{ inputs.as_draft }}" = 'yes' ]; then
-            echo "（as_draft=yes：上面这些 302/404 是 Draft 的正常表现，核对 build.json 与 digest 后再 gh release edit --draft=false）"
-          fi

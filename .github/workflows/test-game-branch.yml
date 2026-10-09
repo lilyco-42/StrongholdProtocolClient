@@ -129,9 +129,12 @@ jobs:
           echo "npm test 退出码 = $rc"
           grep -E "^# (tests|pass|fail|cancelled|skipped|todo) " "$RUNNER_TEMP/npm-test.log" || true
           echo "--- 失败的用例 ---"
-          grep -nE "^ *not ok [0-9]+ - " "$RUNNER_TEMP/npm-test.log" | head -40
+          # `|| true` 是必需的：Actions 的 shell 是 `bash -e {0}`，`set -uo pipefail` 并不会把 -e 关掉，
+          # 而"没有 not ok 行"正是全绿的情况 —— 上一版这条 grep 在套件 0 失败时退 1，把整条 lane 带红
+          # （实测：`# fail 0` 之后紧跟 `Process completed with exit code 1`）。
+          grep -nE "^ *not ok [0-9]+ - " "$RUNNER_TEMP/npm-test.log" | head -40 || true
           echo "--- 失败详情(前 40 条的 error/expected/actual) ---"
-          grep -A 30 -E "^ *not ok [0-9]+ - " "$RUNNER_TEMP/npm-test.log" | grep -E "error: '|\|\ |expected:|actual:|code: '" | head -60
+          grep -A 30 -E "^ *not ok [0-9]+ - " "$RUNNER_TEMP/npm-test.log" | grep -E "error: '|\|\ |expected:|actual:|code: '" | head -60 || true
           exit $rc
 
       - name: 存档完整测试输出

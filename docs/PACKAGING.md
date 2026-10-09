@@ -25,7 +25,7 @@ npm run client:build        # 只生成 build/client/www（想用自己的静态
 | 目标 | 需要 |
 |---|---|
 | 通用 | Node.js 22 / 24；一个**游戏仓库 checkout**（`Stronghold-Protocol`，默认同级 `../Stronghold-Protocol`，可用 `--game` / `SP_GAME_ROOT` / `client.config.json` 指定），且已 `npm install` + `npm run assets` 下载素材——**没有素材的客户端只是个空壳** |
-| gitignore 的派生登记 | `data/voice-langs.json`（包内有哪几种配音、各多少条）与 `public/assets/` 一样**不入 git**，所以**每个 checkout 各有一份**。新开一个 worktree 直接打包，包里就没有这行设置（不静音，是开关整个不长出来）。打包前在游戏仓跑 `node tools/voice-langs.mjs --write`；`data/local-assets.json` 同理。 |
+| gitignore 的派生登记 | `public/assets/`、`public/fonts/`、`public/vendor/`、`data/local-assets.json` 都**不入 git**，所以**每个 checkout 各有一份**。新开一个 worktree 直接打包，包里就没有立绘（不静音，是整层不长出来）。语音语言这一层 0.2.x 换了写法：可选项现在是树里的常量（`public/js/ui/gameLogic/settings.js` 导出的 `VOICE_LANGS`，`audio.js` 按 `settings.voiceLang` 选 `audio.voice` / `audio.voiceJp`），不再是"扫一遍素材再写出来的登记文件"；`data/voice-langs.json` 与 `tools/voice-langs.mjs` 在 0.2.2 的树里**已经不存在**，也没有代码读它（整树 grep 零命中）。旧 payload 里那份是 0.1.4 时代（fork 自己那套 `public/js/ext/voiceLang*.js`，也被上游吸收掉了）的遗留文件，`cut-payload.yml` 明确不再从上一版把它拷回来。至于 UI 文案的多语言，那是另一套：`packs/` + 打包时由游戏仓 `tools/packs.mjs index` 现生成的 `packs/index.json`。 |
 | exe | 无额外要求（`electron` / `electron-builder` 由 `desktop/` 的 `npm install` 装）；出 zip 用资源管理器右键，出 7z/zip 更小可用 7-Zip（可选） |
 | apk | JDK 17+（`JAVA_HOME`）、Android SDK（`ANDROID_HOME`）含 `platforms;android-36` 与 `build-tools;36.0.0`、并已接受许可协议（见 §5） |
 
@@ -677,7 +677,7 @@ F11 要"新壳 + 新内置资源"两边都齐才生效，分两个 Release 就�
 | lane | 管什么 | 素材从哪来 |
 | --- | --- | --- |
 | `test-game-branch.yml` | 游戏仓 `npm test`（fork 自己没有 CI，这是唯一的兜底） | 上一版 payload tar 的 `public/assets\|fonts\|vendor` + `data/local-assets.json` |
-| `cut-payload.yml` | 打出 payload 本体并过六道闸门 | 同上，再加 `data/voice-langs.json`，然后 `tools/fetch-assets.mjs` 补增量 |
+| `cut-payload.yml` | 打出 payload 本体并过六道闸门 | 同上（`data/voice-langs.json` 不再拷，见 §1 那一行），然后 `tools/fetch-assets.mjs` 补增量 |
 
 `cut-payload.yml` 存在的直接理由是 **`patches/game-client.patch` 的锚点**：补丁按上下文行匹配（`tools/unified-diff.mjs`
 允许 ±200 行漂移，但上下文内容变了就红）。上游 0.2.2 往 `public/js/screens/room.js` 的 import 区插了
@@ -693,9 +693,9 @@ F11 要"新壳 + 新内置资源"两边都齐才生效，分两个 Release 就�
   树一脏这份包就追不到 commit（实测过：只有 ` M package-lock.json` 一行，看起来无害，闸门却红）。
   packer 与 `fetch-assets` 只用 node 内建和游戏仓自己的相对模块，不需要依赖。
   同理，如果 `data/assets.json` 被 `fetch-assets` 改写，那是**要回游戏仓提交**的东西，不能烤进 payload。
-  第一次跑就是被一条 `?? data/voice-langs.json` 挡下的：这份「包内有哪几种配音」的派生登记在本文件 §1 的表里被写成
-  gitignore 的派生登记，**但 fork 的 `.gitignore` 其实没有它**（只盖住了 `data/local-assets.json`）。lane 里先按同类
-  处理——写进这个 checkout 的 `.git/info/exclude`，不动仓库；正解是给游戏仓 `.gitignore` 补一行，与 local-assets 并排。
+  第一次跑被一条 `?? data/voice-langs.json` 挡下：那是 0.1.4 时代从上一版 payload 拷回来的派生登记，而 0.2.2 的树里
+  既没有生成它的工具也没有读它的代码（本文件 §1 那一行已经改成现实）。第一反应是"给它加 exclude"，但那会让包多带一个
+  没人读的文件、还让闸门为它弯一次规则 —— 正确的做法是不拷它：包应当正好反映那棵树。闸门红得对，改的是 lane。
 * **失败要能指名道姓**。`test-game-branch.yml` 原本是 `npm test 2>&1 | tail -60`：它把红的那条用例连同报错一起
   扔掉了，日志里只剩 `# fail 1`，谁也不知道是哪一条。现在整份输出落盘、上传成 artifact，只把 `not ok` 行与
   `error:/expected:/actual:` 打进日志。一个只会说「红了」的闸门不是闸门。

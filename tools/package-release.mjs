@@ -37,8 +37,10 @@ import { buildDesktop } from './package-desktop.mjs';
 
 /** Files whose version field tracks the game repo (same set as commit 1ca6d71). */
 export const VERSION_JSON = Object.freeze(['package.json', 'desktop/package.json', 'mobile/package.json',
-  // Tauri 壳的 `version` 在 tauri.conf.json 里只出现一次，和上面三个同样写法。
-  'tauri/src-tauri/tauri.conf.json']);
+  // Tauri 那一壳有两个 JSON：`tauri/package.json`（前端那半）与 `tauri/src-tauri/tauri.conf.json`，
+  // 加上 Cargo.toml 一共三处 —— build-tauri.yml 的版本闸门比的就是这三处对 payload 的 game.app。
+  // 少写一个的代价是"装出来的 exe 显示错版本"，实测漏掉 tauri/package.json 时闸门就红了。
+  'tauri/package.json', 'tauri/src-tauri/tauri.conf.json']);
 /** Lockfiles whose root + packages[""] version must follow (npm's own transitive entries never change). */
 export const VERSION_LOCKS = Object.freeze(['desktop/package-lock.json', 'mobile/package-lock.json']);
 const GRADLE = path.join('mobile', 'android', 'app', 'build.gradle');

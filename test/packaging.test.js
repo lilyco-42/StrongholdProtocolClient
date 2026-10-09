@@ -1176,7 +1176,7 @@ describe('artifact-level offline gate (reads APK zip entries)', () => {
     const v = JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
     const code = versionCode(v);
     assert.ok(Number.isInteger(code) && code > 0, `versionCode(${v}) 应当派生出整数，实得 ${code}`);
-    for (const rel of ['package.json', 'desktop/package.json', 'mobile/package.json']) {
+    for (const rel of ['package.json', 'desktop/package.json', 'mobile/package.json', 'tauri/package.json']) {
       assert.equal(JSON.parse(readFileSync(path.join(ROOT, rel), 'utf8')).version, v, `${rel} 的版本与根不一致`);
     }
     const gradle = readFileSync(path.join(ROOT, 'mobile', 'android', 'app', 'build.gradle'), 'utf8');

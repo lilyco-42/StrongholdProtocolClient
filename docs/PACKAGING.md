@@ -662,3 +662,41 @@ F11 要"新壳 + 新内置资源"两边都齐才生效，分两个 Release 就�
 （`tagName` 已经是这个值，但 git tag 没建），所以"查不到就是没建到一半"这个判断是错的 —— 要看 `isDraft` 和
 `url` 里的 `untagged-…`。改成单个文件上传后实测 549 MB / 3m09s（≈2.9 MB/s），digest 与本地逐字节一致，
 剩下的按序传完再 `gh release edit --draft=false` 发布（那一步才建 tag，也才会触发 `on: push: tags: v*` 那条矩阵）。
+
+---
+
+## 20. 打包与测试搬到 runner 上（`cut-payload.yml` / `test-game-branch.yml`）
+
+规矩是用户定的：**只有 GitHub Actions 可以编译、运行、测试**。这一条改变了本仓库的一个老前提 ——
+`build-clients.yml` 顶上写着「为什么不在 CI 里生成 payload」，理由是素材不在 git 里、CI 现拉上游会少掉我们补齐的那
+17 个文件。理由本身没错，但它假设的是「素材只能从上游拉」。现在我们自己发布的 payload tar 就是那批补齐过的素材，
+它已经在 GitHub 上，所以**素材从上一版 payload 取，代码从游戏仓取**，两者在 runner 上合体就够了。
+
+两条 lane 各管一半：
+
+| lane | 管什么 | 素材从哪来 |
+| --- | --- | --- |
+| `test-game-branch.yml` | 游戏仓 `npm test`（fork 自己没有 CI，这是唯一的兜底） | 上一版 payload tar 的 `public/assets\|fonts\|vendor` + `data/local-assets.json` |
+| `cut-payload.yml` | 打出 payload 本体并过六道闸门 | 同上，再加 `data/voice-langs.json`，然后 `tools/fetch-assets.mjs` 补增量 |
+
+`cut-payload.yml` 存在的直接理由是 **`patches/game-client.patch` 的锚点**：补丁按上下文行匹配（`tools/unified-diff.mjs`
+允许 ±200 行漂移，但上下文内容变了就红）。上游 0.2.2 往 `public/js/screens/room.js` 的 import 区插了
+`openStats` / `SettingsButton` 两行，于是 `@@ -20,7 @@` 那一块再也不是连续的七行 —— 打包在
+`hunk @@ -20,7 @@ does not match` 处红。这个红是好事：它拦住的是一份**邀请链接仍然指向本机地址**的包。
+重锚的办法不改补丁语义，只换 hunk 头与上下文行（`@@ -22,7 @@` / `@@ -84,10 +84,11 @@`），改完必须在 runner 上重新打一次
+才算数，本机跑一次不算。
+
+闸门里最容易误解的两条：
+
+* **游戏树必须干净**（`git status --porcelain` 为空）。`build.json` 的 `game.dirty` 就是这条命令的非空判断，
+  provenance 闸门只接受 `dirty:false`。所以这一步**不装 npm 依赖** —— `npm install` 会改 `package-lock.json`，
+  树一脏这份包就追不到 commit（实测过：只有 ` M package-lock.json` 一行，看起来无害，闸门却红）。
+  packer 与 `fetch-assets` 只用 node 内建和游戏仓自己的相对模块，不需要依赖。
+  同理，如果 `data/assets.json` 被 `fetch-assets` 改写，那是**要回游戏仓提交**的东西，不能烤进 payload。
+* **失败要能指名道姓**。`test-game-branch.yml` 原本是 `npm test 2>&1 | tail -60`：它把红的那条用例连同报错一起
+  扔掉了，日志里只剩 `# fail 1`，谁也不知道是哪一条。现在整份输出落盘、上传成 artifact，只把 `not ok` 行与
+  `error:/expected:/actual:` 打进日志。一个只会说「红了」的闸门不是闸门。
+
+`publish` 默认 `no`：第一次跑只验「补丁能不能打上、闸门过不过」，不产生任何对外可见的东西。
+要出包时先 `draft`（玩家看不到），核对 `build.json` 与 digest 之后再 `gh release edit --draft=false`。
+tag 已存在就直接失败 —— 绝不覆盖已发布的资产。

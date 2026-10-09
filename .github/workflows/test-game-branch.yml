@@ -103,6 +103,26 @@ jobs:
 
       - name: 游戏仓 npm test(闸门)
         run: |
-          set -euo pipefail
+          set -uo pipefail
           git status --porcelain | head -20
-          npm test 2>&1 | tail -60
+          # 上一版这里是 `npm test 2>&1 | tail -60`,它把红的那条用例连同它的报错一起扔掉了:摘要说 `# fail 1`,
+          # 而日志里连一行 `not ok` 都找不到 —— 闸门只能判"红了",判不了"为什么红"。
+          # 现在整份输出落盘,只把失败行与摘要打印出来;退出码手动接住(pipefail + `|| rc=$?`,不能让 set -e 提前杀)。
+          rc=0
+          npm test > "$RUNNER_TEMP/npm-test.log" 2>&1 || rc=$?
+          echo "npm test 退出码 = $rc"
+          grep -E "^# (tests|pass|fail|cancelled|skipped|todo) " "$RUNNER_TEMP/npm-test.log" || true
+          echo "--- 失败的用例 ---"
+          grep -nE "^ *not ok [0-9]+ - " "$RUNNER_TEMP/npm-test.log" | head -40
+          echo "--- 失败详情(前 40 条的 error/expected/actual) ---"
+          grep -A 30 -E "^ *not ok [0-9]+ - " "$RUNNER_TEMP/npm-test.log" | grep -E "error: '|\|\ |expected:|actual:|code: '" | head -60
+          exit $rc
+
+      - name: 存档完整测试输出
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 游戏仓 npm test 输出-${{ inputs.game_ref }}
+          path: ${{ runner.temp }}/npm-test.log
+          if-no-files-found: warn
+          retention-days: 14

@@ -1,0 +1,227 @@
+name: cut-payload
+
+# 在 GitHub 的 runner 上把「游戏仓某一支 + 已发布 payload 里那批素材」打成客户端 payload,不在本机打。
+#
+# 为什么原来不在 CI 打(build-clients.yml 的注释):payload = 游戏代码 + 素材,而素材不在 git 里,要靠现拉;
+# 我们发出去的那份素材是**补齐过的**(boss 骨架 / token 皮肤 / 盟约图标等,上游 fetch 列表里没有),CI 现拉上游
+# 会少掉这些文件。这个理由现在不成立了:**我们自己发布的 payload tar 就是那批补齐过的素材**,已经在 GitHub 上
+# (`payload-v0.2.1-c29` 那份 599,987,165 B)。所以素材从上一版 payload 取,代码从游戏仓取,两者在 runner 上合体。
+#
+# 与 test-game-branch.yml 的分工:那条只跑游戏套件(素材拷进去就扔),这条产出文件。游戏 fork 自己没有 CI,
+# 所以「合并上游之后 payload 还能不能打出来」这件事只有这里能证明 —— 尤其 `patches/game-client.patch` 的上下文
+# 锚点:上游动过 `public/js/screens/room.js` 的 import 区,补丁就会在这里红,而不是打出一个连错服务器的包。
+#
+# 闸门(全部在这条 lane 里,任何一个红就不出包):
+#   1) 素材按**输出文件数**验收,不看退出码(拷了 0 个文件的 cp 也退 0);
+#   2) 游戏树 `git status --porcelain` 必须空 —— 否则 build.json 的 `game.dirty=true`,provenance 闸门红:
+#      打了不该进包的 tracked 文件(通常是 fetch-assets 改写了 data/assets.json,那要回游戏仓提交,不能烤进包);
+#   3) `tools/check-payload-provenance.mjs`:dirty=false 且 describe 带 `-g<sha>`;
+#   4) `tools/check-payload-offline.mjs`:boot 路径里没有 fonts.googleapis/gstatic、没有 dl.lain42.top;
+#   5) 补丁真的落到了包里(grep `__SP_SERVER__` / `toHttpUrl` / picker.js / runtime-config.js);
+#   6) 自检页 `dev/spine-probe.html` 在包里(它没有入口就等于没发 —— c27 踩过)。
+#
+# publish=no 时只打印 sha256 与闸门结果、上传 build.json:第一次跑用它来验「补丁能不能打上」,
+# 不产生任何对外可见的东西。publish=draft 才建 Draft Release(玩家看不到,要 `gh release edit --draft=false` 才发)。
+
+on:
+  workflow_dispatch:
+    inputs:
+      game_repo:
+        description: '游戏仓(owner/name)'
+        required: false
+        default: 'lilyco-42/Stronghold-Protocol'
+      game_ref:
+        description: '游戏仓要打包的分支或 commit'
+        required: true
+        default: 'feat/skins'
+      base_payload_release:
+        description: '素材来自哪个已发布 payload Release 的 tar(补齐过的那批)'
+        required: false
+        default: 'payload-v0.2.1-c29'
+      server:
+        description: '写进 js/runtime-config.js 的默认服务器(发出去的产物要指向它)'
+        required: false
+        default: 'sp.lain42.top'
+      out_tag:
+        description: 'publish 非 no 时新建的 Release tag(必须是还不存在的名字,绝不覆盖已发布资产)'
+        required: false
+        default: 'payload-v0.2.2-c30'
+      asset_name:
+        description: 'tar 的资产文件名'
+        required: false
+        default: 'sp-client-payload-0.2.2-c30.tar.gz'
+      publish:
+        description: 'no=只过闸门并打印 / draft=建 Draft Release / ready=建 Release 并直接可下载'
+        required: false
+        default: 'no'
+        type: choice
+        options:
+          - 'no'
+          - 'draft'
+          - 'ready'
+
+env:
+  NODE_VERSION: '22'
+
+concurrency:
+  group: cut-payload-${{ inputs.out_tag }}
+  cancel-in-progress: false
+
+jobs:
+  cut:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write      # publish!=no 时要建 Release;publish=no 时这一步也不会跑
+    steps:
+      - name: checkout 客户端仓(补丁与打包脚本在这里)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: checkout 游戏仓(带 tag,provenance 要 `git describe`)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.game_repo }}
+          ref: ${{ inputs.game_ref }}
+          path: game
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: 取素材(从上一版 payload tar,不从上游现拉)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REL: ${{ inputs.base_payload_release }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/payload"
+          # -R 必需:当前目录的 git remote 是客户端仓,而 Release 也在客户端仓 —— 但下一步起我们会 cd 到别处,
+          # 显式写死比让 gh 推断便宜且不会指错。
+          gh release download "$REL" -R lilyco-42/StrongholdProtocolClient -D "$RUNNER_TEMP/payload" -p '*.tar.gz'
+          tar=$(ls "$RUNNER_TEMP/payload"/*.tar.gz | head -1)
+          echo "素材来自 $tar($(stat -c %s "$tar") B)"
+          mkdir -p "$RUNNER_TEMP/base"
+          tar -xzf "$tar" -C "$RUNNER_TEMP/base"
+          BASE=$(find "$RUNNER_TEMP/base" -type f | wc -l)
+          echo "解出 $BASE 个文件"
+          df -h "$RUNNER_TEMP" | tail -1
+          test "$BASE" -gt 10000 || { echo "素材解包解出 $BASE 个文件 —— 这个数说明解包本身没成"; exit 1; }
+          test -f "$RUNNER_TEMP/base/data/assets.json"
+
+      - name: 把素材与派生登记放回游戏树
+        working-directory: game
+        run: |
+          set -euo pipefail
+          # public/assets|fonts|vendor 与 data/local-assets.json、data/voice-langs.json 都被 .gitignore 排除,
+          # 新 clone 一个文件都没有 —— 而包里那 13k 个文件就是它们。派生登记跟着素材走,所以照抄上一版。
+          for d in assets fonts vendor; do
+            if [ -d "$RUNNER_TEMP/base/$d" ]; then
+              mkdir -p "public/$d"
+              cp -a "$RUNNER_TEMP/base/$d/." "public/$d/"
+            fi
+          done
+          # 用 if 而不是 "[ -f … ] && cp":后者在文件不存在时返回非零,配合 set -e 会静默杀掉这一步。
+          if [ -f "$RUNNER_TEMP/base/data/local-assets.json" ]; then cp "$RUNNER_TEMP/base/data/local-assets.json" data/local-assets.json; fi
+          if [ -f "$RUNNER_TEMP/base/data/voice-langs.json" ]; then cp "$RUNNER_TEMP/base/data/voice-langs.json" data/voice-langs.json; fi
+          A=$(find public/assets -type f | wc -l); V=$(find public/vendor -type f | wc -l); F=$(find public/fonts -type f | wc -l)
+          echo "游戏树里的素材文件数 assets=$A vendor=$V fonts=$F"
+          test "$A" -gt 10000 || { echo "assets 只拷进 $A 个(预期 1 万以上)—— 别打了,打出来是个没有立绘的包"; exit 1; }
+          test "$V" -gt 3 || { echo "vendor 没拷进来,pixi/spine 相关的文件在包里会缺"; exit 1; }
+
+      - name: 补增量素材(新版本清单里该有的文件)
+        working-directory: game
+        run: |
+          set -euo pipefail
+          # 这一步不该是决定性的:素材的真相在上一版 payload 里,而 CDN 从美国 runner 不一定拉得到。
+          # 失败只记录,让后面的存在性闸门与文件数去判。
+          node tools/fetch-assets.mjs 2>&1 | tail -15 || echo "[warn] fetch-assets 失败(离线/CDN 变更)—— 继续,靠已拷进来的那批"
+          find public/assets -type f | wc -l
+
+      - name: 游戏树必须干净(打了不该打的东西就别出包)
+        working-directory: game
+        run: |
+          set -euo pipefail
+          # 这一步不装依赖:packer 与 fetch-assets 只用 node 内建和游戏仓自己的相对模块,`npm install` 会把
+          # package-lock.json 改脏,而 dirty 的树打出来的包 provenance 闸门必红(c29 那次实测就是 ` M package-lock.json`)。
+          git status --porcelain
+          DIRTY=$(git status --porcelain | head -20)
+          if [ -n "$DIRTY" ]; then
+            echo "游戏树脏了 —— build.json 会写 dirty:true,这份包追不到 commit。"
+            echo "若是 data/assets.json 被 fetch-assets 改写:那要回游戏仓提交,不能烤进 payload。"
+            echo "若是 public/ 下多出未跟踪文件:检查 .gitignore 是否覆盖它。"
+            exit 1
+          fi
+          echo "干净。HEAD=$(git rev-parse HEAD) describe=$(git describe --tags --always --dirty)"
+
+      - name: 打 payload
+        run: |
+          set -euo pipefail
+          node tools/package-client.mjs --game game --out "$RUNNER_TEMP/www" --server '${{ inputs.server }}' 2>&1 | tail -25
+          find "$RUNNER_TEMP/www" -type f | wc -l
+
+      - name: 闸门:出处 / 离线 / 补丁真的落进包里
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/www"
+          # readFileSync 而不是 require:后者在 --eval 里靠 cwd 推 module.paths,不如显式路径直白。
+          node -p "JSON.parse(require('fs').readFileSync('./game/package.json','utf8')).version" > /tmp/appver
+          node tools/check-payload-provenance.mjs "$OUT" --expect-app "$(cat /tmp/appver)"
+          node tools/check-payload-offline.mjs "$OUT"
+          # 补丁没落到包里时上面两个闸门都是绿的(它俩看的是 build.json 与外链),所以这里直接 grep 那三处改动。
+          grep -q '__SP_SERVER__' "$OUT/js/runtime-config.js"
+          grep -q 'resolveServerTarget' "$OUT/js/net.js"
+          grep -q 'toHttpUrl' "$OUT/js/screens/room.js"
+          grep -q '/js/shell/picker.js' "$OUT/index.html"
+          grep -q '/css/shell-display.css' "$OUT/index.html"
+          test -f "$OUT/js/shell/picker.js"
+          test -f "$OUT/js/shell/picker-core.js"
+          # 自检页没有入口就等于没发(c27 的教训):文件在 + 按钮在,两个都要有。
+          test -f "$OUT/dev/spine-probe.html" || { echo "包里缺 dev/spine-probe.html"; exit 1; }
+          grep -q 'sp-selftest' "$OUT/js/shell/picker.js" || { echo "picker.js 里没有自检页入口"; exit 1; }
+          echo "闸门通过:$(find "$OUT" -type f | wc -l) 个文件,$(du -sh "$OUT" | cut -f1)"
+
+      - name: 存档 build.json 与清单
+        uses: actions/upload-artifact@v4
+        with:
+          name: payload-build-${{ inputs.out_tag }}
+          path: ${{ runner.temp }}/www/build.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: 打包并出版(默认不出)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PUBLISH: ${{ inputs.publish }}
+          TAG: ${{ inputs.out_tag }}
+          ASSET: ${{ inputs.asset_name }}
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/www"
+          sha256sum "$OUT/build.json" | awk '{print "build.json sha256=" $1}'
+          if [ "$PUBLISH" = 'no' ]; then
+            echo "publish=no —— 不建 Release。上面是闸门结果与 build.json,包本身留在 runner 上。"
+            cat "$OUT/build.json"
+            exit 0
+          fi
+          # 沿用上一版 tar 的内部结构:解包方式是 `tar -xzf … -C dir`,所以根就是 payload 目录本身。
+          tar -czf "$RUNNER_TEMP/$ASSET" -C "$OUT" .
+          sha256=$(sha256sum "$RUNNER_TEMP/$ASSET" | awk '{print $1}')
+          SIZE=$(stat -c %s "$RUNNER_TEMP/$ASSET")
+          echo "tar=$ASSET size=$SIZE sha256=$sha256"
+          if gh release view "$TAG" -R lilyco-42/StrongholdProtocolClient >/dev/null 2>&1; then
+            echo "$TAG 已经存在 —— 绝不覆盖已发布的资产。换个 tag 再来。"
+            exit 1
+          fi
+          GAME_SHA=$(git -C game rev-parse HEAD)
+          NOTES="游戏 $GAME_SHA(ref ${{ inputs.game_ref }}),素材来自 ${{ inputs.base_payload_release }},server=${{ inputs.server }}。由 cut-payload.yml 在 runner 上打出。"
+          DRAFT='--draft'
+          if [ "$PUBLISH" = 'ready' ]; then DRAFT=''; fi
+          # 一次只传一个资产:多个大资产在同一命令里传,外层超时会在 Release 只建了一半时杀掉它,
+          # 而那时 tag 已经写进去了(c28 踩过:`gh release view <tag>` 成功,assets 却是 0)。
+          gh release create "$TAG" "$RUNNER_TEMP/$ASSET" --target "$GAME_SHA" --title "payload $(cat /tmp/appver) (${{ inputs.out_tag }})" --notes "$NOTES" $DRAFT
+          gh release view "$TAG" -R lilyco-42/StrongholdProtocolClient --json tagName,isDraft,assets \
+            --jq '{tagName,isDraft,assets:[.assets[]|{name,size,digest}]}'

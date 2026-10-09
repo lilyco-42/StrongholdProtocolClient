@@ -59,6 +59,9 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: write
+      # `gh run download` 取的是 actions 的对象存储：默认 token 只有 contents:read，
+      # 加了 contents: write 之后这一步不再自动带上 actions:read —— 少了它就是一条看不出来的 403。
+      actions: read
     steps:
       - name: tag 必须还不存在
         env:

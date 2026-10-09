@@ -711,6 +711,17 @@ tag 已存在就直接失败 —— 绝不覆盖已发布的资产。
 它之后 exe / apk / ipa / Tauri 安装器都只从这一个 tar 出，`build-clients` 与 `build-tauri` 的 `payload_url`
 填 Release 的公开下载地址即可 —— 那条 URL 匿名 200，不再依赖欠费中的 `dl.lain42.top`。
 
-`--target` 这一脚踩过：`gh release create --target <游戏的 sha>` 得到 `HTTP 422 Release.target_commitish is invalid`。
+**c30 / c31 / c32 为什么是三刀**：c30 是第一刀（补丁重锚，闸门全绿，已公开）；c31 是第二刀，带的是
+`spine-probe` 页的"清单没加载不许报全通过"那一修（`feat/skins@642a8bb4`），它只到 Draft；WebKit 那一步第一次真跑
+又把这一页的第二个自坏挖出来（问美术索引用 chessId 而不是 charId，见 `docs/IOS-ART.md` §6），于是第三刀 c32
+（`feat/skins@082fc0a8`，600,300,419 B，`sha256:2043e9cfd58f…`）才是玩家拿到的那一份。已公开的东西一个都不动：
+payload Release 只增不改，编号跳号是有记录的（c16 也这样决定过不发玩家版）。
+
+**fork 的 tag 少了一截**：runner 里 `git describe` 报 `v0.1.3-648-g082fc0a`，而本机是 `v0.2.2-68-g082fc0a8` ——
+因为 fork 的 `origin` 只有到 `v0.1.3` 的 tag，上游的 `v0.2.0/v0.2.1/v0.2.2` 从来没推过去。已补推
+（`git push origin refs/tags/v0.2.2` 等三个）。这不改包的内容：provenance 认的是 `game.commit`（完整 sha）与
+`dirty:false`，describe 只是给人读的近似坐标 —— 但它读起来像 0.1.3 时代，就没人会信它，所以值得修。
+
+`--target` 这一脚踩过：`--target` 这一脚踩过：`gh release create --target <游戏的 sha>` 得到 `HTTP 422 Release.target_commitish is invalid`。
 Release 建在**客户端仓**上，target 必须是那个仓里的 ref/commit；游戏的出处由 `build.json` + provenance 闸门 + notes 承担，
 不需要（也不应该）由 tag 指向哪个 commit 来说。

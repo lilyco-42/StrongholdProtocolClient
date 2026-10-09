@@ -170,3 +170,24 @@ cd <游戏仓> && PORT=47993 HOST=127.0.0.1 SP_NO_BROWSER=1 node server/index.js
 
 退出码与 §2 一致：0 两边结论一致；1 = 复现（打印是哪几行、两边各说什么）；2 = 探测不成立。
 本地读结果：`gh run download <run> -n 探测结果-art-probe` 里有 `spine-probe-chromium.json` / `spine-probe-webkit.json`。
+
+## 6. 第一次真跑就抓到的两个自坏（2026-10-09，游戏仓 `feat/skins` 642a8bb4 / 082fc0a8）
+
+两个引擎都 HTTP 200、都跑完了这一页，然后各报一句「四层全通过」而只有 4 行 —— 红的是这一页自己：
+
+1. **问美术索引用错了键**。`candidates()` 拿 chess 记录的 `rec.id`（`chess_char_1_01_a`）去问 `assets.spineEntry`，
+   而 `data/assets.json` 的 `chars` 是按 charId（`char_498_inside`）键的。照这一页自己的谓词（`validSpine(front)`：
+   `skel` 要匹配 `/...skel`、要有 `atlas` 字符串、`anims` 得是对象）实测这份树：266 条 chess 记录里按 charId
+   去重后有 **121** 个干员合格，按 chessId 一个都问不到。于是这一页从 c27 进包起，对任何设备都只会说
+   「没找到任何带 spine 的干员」。干员在棋盘上取模型用的是同一条规则（`render/units.js` 的 `info.spine || info.defId`）。
+2. **「空」被报成「没问题」**。两处载入写成 `loadAll('chess').then(() => assets.ready()).catch(() => null)` 一个
+   catch —— 失败被伪装成"清单里没有这一项"；而 `finish()` 的结论梯子根本没有 `清单` / `探针异常` 这一格，
+   于是后面全空的时候落到最后那句「四层全通过」。
+
+所以这一页现在：① 运行时与 ② WebGL 先跑（它们不依赖清单，"PIXI 缺失"往往正是清单为空的原因），两处载入各自
+try/catch 并把 `ready=` · 棋盘条数 · 报错原文写进 `清单` 那一行，`finish()` 第一条分支就是"清单没起来 / 探针炸了 →
+这一页什么都没证明"。`test/client-static.test.js` 钉住键与这两条形状（不许 `spineEntry(rec.id`、不许
+`.catch(() => null)`、必须有那一格），由客户端仓的 `test-game-branch` lane 跑 —— 游戏 fork 自己没有 CI。
+
+**这一层仍然只有真机能定论**：CI 的两个引擎都在 Linux 上，iPhone 的 Capacitor 自定义 scheme 与手机内存压力不在
+这条路上。修好的意义是让玩家点「立绘自检」能拿到一句**可信**的话，而不是"看着一切正常"。

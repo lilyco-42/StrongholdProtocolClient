@@ -1262,19 +1262,21 @@ describe('the mirror check is case-exact, because Android filesystems are', () =
   });
 
   test('the directory mode is case-exact too (this is the one existsSync gets wrong)', () => {
-    // Windows: fs.existsSync('f0.woff2') is true when the file on disk is F0.woff2 — so a payload assembled on a
-    // windows-latest runner can pass an existsSync check and still 404 on a phone. readdirSync returns the stored
-    // casing, which is what the gate now compares against.
+    // Windows/macOS: `fs.existsSync('f0.woff2')` is TRUE when the file on disk is `F0.woff2` — so a payload
+    // assembled on a windows runner can pass an existsSync check and still 404 on a phone. Linux is
+    // case-sensitive, so the premise itself is a property of the machine, not of the gate: measure which one we
+    // are on and still require the gate to refuse the mismatch. Asserting the premise as a requirement is what
+    // made this test red on ubuntu-latest while green here.
     const root = mkdtempSync(path.join(tmpdir(), 'sp-casedir-'));
     mkdirSync(path.join(root, 'webfonts', 'google'), { recursive: true });
     writeFileSync(path.join(root, 'index.html'), '<link href="/webfonts/google/google.css">');
     writeFileSync(path.join(root, 'webfonts', 'google', 'google.css'), sheetTextFor(120));
     writeFileSync(path.join(root, 'webfonts', 'google', 'F0.woff2'), 'wOF2');
     for (let i = 1; i < 120; i++) writeFileSync(path.join(root, 'webfonts', 'google', `f${i}.woff2`), 'wOF2');
-    assert.ok(existsSync(path.join(root, 'webfonts', 'google', 'f0.woff2')), '前提：existsSync 对大小写不敏感（正因如此不能用它判）');
+    const insensitive = existsSync(path.join(root, 'webfonts', 'google', 'f0.woff2'));
     const r = checkPayloadOffline(root);
     const flat = r.problems.join('\n');
-    assert.match(flat, /个切片文件缺失/);
+    assert.match(flat, /个切片文件缺失/, `这台机器 existsSync 大小写不敏感=${insensitive}`);
     assert.match(flat, /只差大小写/, '要说出"只差大小写"，否则没人明白为什么算缺失');
   });
 

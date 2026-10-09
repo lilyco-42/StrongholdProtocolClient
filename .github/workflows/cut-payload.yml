@@ -221,11 +221,15 @@ jobs:
             exit 1
           fi
           GAME_SHA=$(git -C game rev-parse HEAD)
-          NOTES="游戏 $GAME_SHA(ref ${{ inputs.game_ref }}),素材来自 ${{ inputs.base_payload_release }},server=${{ inputs.server }}。由 cut-payload.yml 在 runner 上打出。"
           DRAFT='--draft'
           if [ "$PUBLISH" = 'ready' ]; then DRAFT=''; fi
           # 一次只传一个资产:多个大资产在同一命令里传,外层超时会在 Release 只建了一半时杀掉它,
           # 而那时 tag 已经写进去了(c28 踩过:`gh release view <tag>` 成功,assets 却是 0)。
-          gh release create "$TAG" "$RUNNER_TEMP/$ASSET" --target "$GAME_SHA" --title "payload $(cat /tmp/appver) (${{ inputs.out_tag }})" --notes "$NOTES" $DRAFT
+          # --target 要的是**本仓(客户端仓)的** ref/commit：Release 建在客户端仓上，GitHub 会拿 target_commitish
+          # 去那个仓里找对象。传游戏的 sha 会得到 `HTTP 422 Release.target_commitish is invalid`（实测）。
+          # 游戏那一版的出处不靠它：build.json 里带 commit/describe，provenance 闸门已经在判，notes 里再写一遍。
+          CLIENT_SHA=$(git rev-parse HEAD)
+          NOTES="游戏 $GAME_SHA（${{ inputs.game_repo }}@${{ inputs.game_ref }}），素材来自 ${{ inputs.base_payload_release }}，server=${{ inputs.server }}。由 cut-payload.yml 在 runner 上打出（客户端提交 $CLIENT_SHA）。"
+          gh release create "$TAG" "$RUNNER_TEMP/$ASSET" --target "$CLIENT_SHA" --title "payload $(cat /tmp/appver) (${{ inputs.out_tag }})" --notes "$NOTES" $DRAFT
           gh release view "$TAG" -R lilyco-42/StrongholdProtocolClient --json tagName,isDraft,assets \
             --jq '{tagName,isDraft,assets:[.assets[]|{name,size,digest}]}'

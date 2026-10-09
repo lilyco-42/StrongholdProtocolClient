@@ -496,6 +496,20 @@ describe('desktop shell: a stable loopback origin keeps localStorage', () => {
     }
   });
 
+  test('a port the OS reserved (Windows answers EACCES) is skipped, not fatal — and the two shells agree', async () => {
+    // windows-latest 上实测到的：从被占的 50000 往后找，撞到 50001 直接抛 `listen EACCES`，而不是接着试 50002。
+    // Hyper-V / WSL2 / Docker 会把一整段动态端口留给系统（`netsh interface ipv4 show excludedportrange protocol=tcp`），
+    // bind 进去是 EACCES 而不是 EADDRINUSE —— 落在玩家机上就是"桌面版打不开"。行为的证据是那个作业本身变绿；
+    // 这里钉住的是判定集合：哪些错误算"这台机器上这个口不能用"，哪些仍然必须抛出来（不能把编程错误重试掉）。
+    const { PORT_SKIP_CODES } = await import('../desktop/serve.mjs');
+    assert.deepEqual([...PORT_SKIP_CODES].sort(), ['EACCES', 'EADDRINUSE', 'EPERM']);
+    assert.ok(!PORT_SKIP_CODES.has('ERR_INVALID_ARG'), 'a programming error must still throw, not be retried away');
+    const src = readFileSync(path.join(ROOT, 'desktop', 'serve.mjs'), 'utf8');
+    assert.match(src, /if \(!PORT_SKIP_CODES\.has\(e\?\.code\)\) throw e;/, 'the search loop must consult the set');
+    const rust = readFileSync(path.join(ROOT, 'tauri', 'src-tauri', 'src', 'server.rs'), 'utf8');
+    assert.match(rust, /Err\(_\) => continue,/, 'the Rust shell skips any unusable port inside its search window');
+  });
+
   test('the weakest host model still serves the mirror: plain static, no alias, no rewrite (Capacitor does exactly this)', async () => {
     // The APK's BGM was silent because Capacitor is *just* a static file host: it cannot resolve the extension-less
     // /media/… alias (that is what `__SP_MEDIA_ALIAS__ = false` is for). The font mirror went through the same question,

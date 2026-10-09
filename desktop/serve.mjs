@@ -62,6 +62,16 @@ export const MIME = Object.freeze({
 export const DEFAULT_PORT = 47821;
 /** Consecutive ports tried when the preferred one is taken. The order is fixed, so the origin stays put anyway. */
 export const PORT_SEARCH = 16;
+/**
+ * Bind errors that mean "this port is not usable *on this machine*", so the search should move on instead of
+ * killing the shell. `EACCES` is the Windows case: Hyper-V / WSL2 / Docker Desktop reserve whole blocks of the
+ * dynamic range (`netsh interface ipv4 show excludedportrange protocol=tcp`), and a bind into one of those answers
+ * EACCES, not EADDRINUSE. Measured on windows-latest 2026-10-09 — the search from a busy 50000 died on
+ * `listen EACCES: permission denied 127.0.0.1:50001` instead of trying 50002, which is the same shape as "the
+ * desktop exe refuses to start on a player who happens to have a reservation over 47821..47836". The Tauri shell
+ * already skipped every bind error (`tauri/src-tauri/src/server.rs`: `Err(_) => continue`); these two must agree.
+ */
+export const PORT_SKIP_CODES = new Set(['EADDRINUSE', 'EACCES', 'EPERM']);
 
 /** First path segments under www/ that are content-addressed enough to cache for a day (server/index.js LONG_CACHE_DIRS). */
 export const LONG_CACHE_DIRS = new Set(['assets', 'fonts', 'vendor', 'webfonts']);
@@ -266,8 +276,8 @@ export function createStaticServer({ root, host = '127.0.0.1', port = 0, log = c
         break;
       } catch (e) {
         failure = e;
-        if (e?.code !== 'EADDRINUSE') throw e;
-        if (candidates[i + 1] > 0) log.warn?.(`[client] loopback port ${p} is in use — trying ${candidates[i + 1]}`);
+        if (!PORT_SKIP_CODES.has(e?.code)) throw e;
+        if (candidates[i + 1] > 0) log.warn?.(`[client] loopback port ${p} is not usable here (${e?.code}) — trying ${candidates[i + 1]}`);
       }
     }
     if (failure) throw failure;

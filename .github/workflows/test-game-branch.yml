@@ -26,6 +26,10 @@ on:
         description: '游戏仓(owner/name)'
         required: false
         default: 'lilyco-42/Stronghold-Protocol'
+      upstream_repo:
+        description: '上游仓(owner/name)，ext-surface 那条测试要按上游 tip 反查我们的挂载点'
+        required: false
+        default: 'sganggs/Stronghold-Protocol'
       payload_release:
         description: '用哪个已发布 payload Release 的 tar 补素材(素材与产物同源,才测得出真机上那份文件)'
         required: false
@@ -54,6 +58,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node_version }}
+
+      - name: 把上游 tip 取进来(ext-surface 那条测试要按上游反查)
+        run: |
+          set -euo pipefail
+          # test/ext-surface.test.js 的第三条 "no unrecorded mount points" 要 `git diff upstream/master..HEAD`。
+          # actions/checkout 只配了 origin(fork 自己)，没有 upstream/master 这个 ref 时那条测试是直接抛的 ——
+          # 于是 lane 红在环境上而不是红在合并上(2026-10-09 那次 5782 项里唯一的 1 项红就是它)。
+          # 上游是公开仓，匿名浅取一个 commit 就够：`git diff A..B` 是两棵树比，不需要 merge base。
+          git remote add upstream "https://github.com/${{ inputs.upstream_repo }}.git"
+          git fetch --no-tags --depth 1 upstream master
+          git update-ref refs/remotes/upstream/master FETCH_HEAD
+          git rev-parse --verify upstream/master
 
       - name: 装依赖(不跑 postinstall)
         run: |

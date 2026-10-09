@@ -693,6 +693,9 @@ F11 要"新壳 + 新内置资源"两边都齐才生效，分两个 Release 就�
   树一脏这份包就追不到 commit（实测过：只有 ` M package-lock.json` 一行，看起来无害，闸门却红）。
   packer 与 `fetch-assets` 只用 node 内建和游戏仓自己的相对模块，不需要依赖。
   同理，如果 `data/assets.json` 被 `fetch-assets` 改写，那是**要回游戏仓提交**的东西，不能烤进 payload。
+  第一次跑就是被一条 `?? data/voice-langs.json` 挡下的：这份「包内有哪几种配音」的派生登记在本文件 §1 的表里被写成
+  gitignore 的派生登记，**但 fork 的 `.gitignore` 其实没有它**（只盖住了 `data/local-assets.json`）。lane 里先按同类
+  处理——写进这个 checkout 的 `.git/info/exclude`，不动仓库；正解是给游戏仓 `.gitignore` 补一行，与 local-assets 并排。
 * **失败要能指名道姓**。`test-game-branch.yml` 原本是 `npm test 2>&1 | tail -60`：它把红的那条用例连同报错一起
   扔掉了，日志里只剩 `# fail 1`，谁也不知道是哪一条。现在整份输出落盘、上传成 artifact，只把 `not ok` 行与
   `error:/expected:/actual:` 打进日志。一个只会说「红了」的闸门不是闸门。

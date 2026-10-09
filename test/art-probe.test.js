@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { buildArtCases, mimeFor, readManifests, startProbeServer } from '../tools/art-probe.mjs';
 
@@ -188,5 +188,43 @@ test('the probe page measures the four things the driver compares', () => {
   const html = fs.readFileSync(path.join(TOOLS, 'art-probe.html'), 'utf8');
   for (const marker of ['eager', 'lazy', 'scrolled', 'rerender', '__control__', 'droppedErrored']) {
     assert.ok(html.includes(marker), `the page no longer reports ${marker}`);
+  }
+});
+
+// spine-probe-check.mjs 的两种「测不了」必须与「测出来了」区分开：它用退出码 2 表示探针本身不成立，
+// 用 1 表示复现了 WebKit 的失败。这两条把它最前面的两道 fail-closed 门跑一遍 —— 都是纯文件系统判断，
+// 不需要 Playwright，所以在客户端仓的 CI 里也能真跑（不是那种会被跳过的绿）。
+// spawnSync 而不是 execFileSync：后者会把断言失败也当成进程失败抛回同一个 catch，红得很含糊。
+const runDriver = (...args) => spawnSync(process.execPath,
+  [path.join(TOOLS, 'spine-probe-check.mjs'), ...args, '--wait-ms', '3000'],
+  { encoding: 'utf8', stdio: 'pipe' });
+
+test('spine-probe driver exits 2 when the probe page is not in the tree', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sp-spine-'));
+  try {
+    const r = runDriver('--root', dir);
+    assert.equal(r.status, 2, `退出码应是 2（探针不成立），实际 ${r.status}：${(r.stdout + r.stderr).slice(0, 300)}`);
+    assert.match(`${r.stdout}${r.stderr}`, /包里找不到/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('spine-probe driver checks the tree before it asks for an engine', () => {
+  // 顺序是刻意的：包里没有自检页时报的应该是「缺页」而不是「没装 playwright」——
+  // 后者会把一个打包问题伪装成环境问题，而这两种红要的处理完全不同。
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sp-spine-'));
+  try {
+    fs.mkdirSync(path.join(dir, 'dev'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'dev', 'spine-probe.html'), '<html></html>');
+    const r = runDriver('--root', dir);
+    const out = `${r.stdout}${r.stderr}`;
+    assert.equal(r.status, 2, `退出码应是 2，实际 ${r.status}：${out.slice(0, 300)}`);
+    assert.doesNotMatch(out, /包里找不到/, '页在的时候不该再报缺页');
+    // 本仓库没有依赖，所以这里应当停在「要 Playwright」；万一将来装了，它会走到「页面没结论」，
+    // 两种都是探针不成立(2)，但都不能悄悄变成 0。
+    assert.match(out, /Playwright|没有出现/, out.slice(0, 300));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -127,6 +127,14 @@ jobs:
           # 用 if 而不是 "[ -f … ] && cp":后者在文件不存在时返回非零,配合 set -e 会静默杀掉这一步。
           if [ -f "$RUNNER_TEMP/base/data/local-assets.json" ]; then cp "$RUNNER_TEMP/base/data/local-assets.json" data/local-assets.json; fi
           if [ -f "$RUNNER_TEMP/base/data/voice-langs.json" ]; then cp "$RUNNER_TEMP/base/data/voice-langs.json" data/voice-langs.json; fi
+          # data/voice-langs.json 在 fork 里既没被跟踪、也没被 .gitignore 盖住（这条 lane 第一次跑就是被它挡下的：
+          # `?? data/voice-langs.json`），而 packer 的 dirty 判定就是 `git status --porcelain` 非空 —— 于是每一包都会
+          # 被判成 dirty。它由 tools/voice-langs.mjs 在服务端现生成、在包里跟着素材走，与 local-assets.json 同类，
+          # 所以在这个 runner 的 checkout 里按同类处理：写进 .git/info/exclude（只改这个 checkout，不动仓库文件）。
+          # 正解是给 fork 的 .gitignore 补一行，与 data/local-assets.json 并排；那要改游戏仓，另开一条去改。
+          GITDIR=$(git rev-parse --absolute-git-dir)
+          mkdir -p "$GITDIR/info"
+          grep -qxF 'data/voice-langs.json' "$GITDIR/info/exclude" 2>/dev/null || echo 'data/voice-langs.json' >> "$GITDIR/info/exclude"
           A=$(find public/assets -type f | wc -l); V=$(find public/vendor -type f | wc -l); F=$(find public/fonts -type f | wc -l)
           echo "游戏树里的素材文件数 assets=$A vendor=$V fonts=$F"
           test "$A" -gt 10000 || { echo "assets 只拷进 $A 个(预期 1 万以上)—— 别打了,打出来是个没有立绘的包"; exit 1; }

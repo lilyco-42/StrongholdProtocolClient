@@ -149,6 +149,24 @@ cd <游戏仓> && PORT=47993 HOST=127.0.0.1 SP_NO_BROWSER=1 node server/index.js
 ```
 
 参数 `?ids=<chessId,…>` 指定要测的干员（默认取清单里前三个有 spine 的，按 id 排序，所以不同人报的号能对上同一批），
-`?many=<n>` 改第 ④ 层的数量。它随 payload 进 app，因此**要到 c27 之后**玩家那边才点得开。
+`?many=<n>` 改第 ⑦ 层（不释放地连加载）的数量。它随 payload 进 app，因此**要到 c27 之后**玩家那边才点得开。
 
 相关的另两份文档：`docs/PACKAGING.md`（五个形态与闸门顺序、§17 网友服复测、§18 F11）、`docs/ANDROID-SIGNING.md`（另一条真机反馈）。
+
+## 5. 静态图之外：让两个引擎各跑一遍**包里的** Spine 自检页
+
+§2 那条流水线证明的是「同一批文件在 webkit 里 load 得和 chromium 一样」。但玩家说的是**立绘整层不见**，
+而立绘不是 `<img>`：它是 `.skel` + `.atlas` + 贴图交给 pixi-spine，还要一个 WebGL 上下文，以及一次装下好几个骨架的内存。
+这条路径静态探针碰不到，所以 `probe-art-engines.yml` 现在有第二步，跑 `tools/spine-probe-check.mjs`：
+它把 payload 的 web 根用同源静态服务起起来，让 chromium 与 webkit 各自打开**包里那一页**
+`/dev/spine-probe.html`（同一个页面，玩家在 app 里点「立绘自检」看到的就是它），读 `window.__SPINE_PROBE__` 逐行对照。
+
+* 参与判定：① 运行时、③ 图片、④ fetch .skel/.atlas、⑤ acquire、⑥ 阴性对照。
+* 只报告不判定：② WebGL、⑦ 连续加载。② 在这台 runner 上是软件管线，跟 iPhone 的 GPU 不是一回事；
+  ⑦ 会把内存顶到引擎放手为止，共享 runner 给多少 RAM 决定它在哪一步停 —— 这两条当闸门只会让人学会重跑。
+* 三道 fail-closed：包里没有那一页 / `__SPINE_PROBE__` 一直没出现 / 阴性对照没有「如期失败」，都退 **2**
+  （探测本身不成立），不会伪装成 0。还有一道是给闸门自己的：`GATED` 里任何一族在参照引擎里一行都没出现，
+  也退 2 —— 否则「两边一致」等于「什么都没比」。
+
+退出码与 §2 一致：0 两边结论一致；1 = 复现（打印是哪几行、两边各说什么）；2 = 探测不成立。
+本地读结果：`gh run download <run> -n 探测结果-art-probe` 里有 `spine-probe-chromium.json` / `spine-probe-webkit.json`。

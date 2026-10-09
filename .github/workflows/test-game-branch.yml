@@ -138,7 +138,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: 游戏仓 npm test 输出-${{ inputs.game_ref }}
+          # 名字里不能带 `/`（feat/skins 插进去就会让 upload-artifact 直接失败：整条 lane 因为一个文件名而红）。
+          # 要测的分支写在日志内容与运行页标题里，够了。
+          name: 游戏仓 npm test 输出
           path: ${{ runner.temp }}/npm-test.log
           if-no-files-found: warn
           retention-days: 14

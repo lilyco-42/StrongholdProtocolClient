@@ -1,6 +1,6 @@
 [package]
 name = "stronghold-protocol-tauri"
-version = "0.2.1"
+version = "0.2.2"
 description = "《卫戍协议：盟约》的 Tauri 壳（系统 WebView2，不再自带 Chromium）"
 edition = "2021"
 rust-version = "1.77"

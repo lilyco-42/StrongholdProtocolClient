@@ -703,3 +703,14 @@ F11 要"新壳 + 新内置资源"两边都齐才生效，分两个 Release 就�
 `publish` 默认 `no`：第一次跑只验「补丁能不能打上、闸门过不过」，不产生任何对外可见的东西。
 要出包时先 `draft`（玩家看不到），核对 `build.json` 与 digest 之后再 `gh release edit --draft=false`。
 tag 已存在就直接失败 —— 绝不覆盖已发布的资产。
+
+**第一份由这条 lane 出的包**：`payload-v0.2.2-c30`，资产 `sp-client-payload-0.2.2-c30.tar.gz`
+600,297,895 B，`sha256:c425763375674a7633a71428966035edbca737322f63e5a8e844e2d48d175035`，
+`build.json` 的 sha256 是 `bad91eb716f9e4c65e353a8236efd0ccce875c396ec5262f95528795c28d4cb3`
+（游戏 `0.2.2` / commit `b7dfc082` / dirty:false / describe `v0.1.3-646-gb7dfc08`）。
+它之后 exe / apk / ipa / Tauri 安装器都只从这一个 tar 出，`build-clients` 与 `build-tauri` 的 `payload_url`
+填 Release 的公开下载地址即可 —— 那条 URL 匿名 200，不再依赖欠费中的 `dl.lain42.top`。
+
+`--target` 这一脚踩过：`gh release create --target <游戏的 sha>` 得到 `HTTP 422 Release.target_commitish is invalid`。
+Release 建在**客户端仓**上，target 必须是那个仓里的 ref/commit；游戏的出处由 `build.json` + provenance 闸门 + notes 承担，
+不需要（也不应该）由 tag 指向哪个 commit 来说。

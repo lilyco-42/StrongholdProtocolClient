@@ -1187,6 +1187,12 @@ describe('artifact-level offline gate (reads APK zip entries)', () => {
     const build = [...pbx.matchAll(/\bCURRENT_PROJECT_VERSION = ([^;]+);/g)].map((m) => m[1]);
     assert.ok(marketing.length >= 2 && marketing.every((x) => x === v), `iOS MARKETING_VERSION 是 ${marketing.join('/')}，应为 ${v}（Debug 与 Release 都要）`);
     assert.ok(build.length >= 2 && build.every((x) => x === String(code)), `iOS CURRENT_PROJECT_VERSION 是 ${build.join('/')}，应为 ${code}`);
+    // Tauri 那一版还多两个字段（conf 与 Cargo.toml）。build-tauri.yml 的版本闸门拿 payload 的 game.app 比这三处，
+    // 少改一个就是"装出来的 exe 显示错版本"，所以它们必须和上面的六个文件同一次写全。
+    const conf = JSON.parse(readFileSync(path.join(ROOT, 'tauri', 'src-tauri', 'tauri.conf.json'), 'utf8'));
+    assert.equal(conf.version, v, 'tauri/src-tauri/tauri.conf.json 的版本与根不一致');
+    const cargo = readFileSync(path.join(ROOT, 'tauri', 'src-tauri', 'Cargo.toml'), 'utf8');
+    assert.match(cargo, new RegExp(`^version = "${v}"`, 'm'), `Cargo.toml 的 version 不是 ${v}`);
   });
 });
 

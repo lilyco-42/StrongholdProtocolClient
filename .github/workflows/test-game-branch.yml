@@ -1,0 +1,105 @@
+name: test-game-branch
+
+# 在 GitHub 的 runner 上跑游戏仓的测试,而不是本机。
+#
+# 为什么需要这条流水线:游戏 fork(`lilyco-42/Stronghold-Protocol`)的 Actions **史上从来没有产生过一次 run**
+# —— `.github/workflows/ci.yml` 在 master 和分支上都在,`GET /actions/permissions` 也报 enabled,
+# 但 `GET /actions/runs` 的 `total_count` 是 0。所以"同步上游之后测试有没有红"这件事在 fork 那边无处可跑,
+# 而本机不允许跑(只有 GitHub Actions 可以编译与运行)。客户端仓的 Actions 是确实能跑的(产物都在那儿出),
+# 于是这条 lane 从客户端仓里 checkout 游戏分支来跑它的套件。
+#
+# 素材从哪来:`public/assets|fonts|vendor` 与 `data/local-assets.json` 都被 .gitignore 排除,新 clone 里一个
+# 文件都没有,而好几组测试是"按磁盘上有没有这个文件"来判的 —— 直接跑会红得莫名其妙。官方的
+# `dl.lain42.top` 现在因为欠费整片 403,所以取我们自己发布的 payload tar(它就是同一批素材,已经在 GitHub 上),
+# 把三类目录拷进去,再让 `tools/fetch-assets.mjs` 补上新版本相对的增量。
+#
+# 退出码就是游戏仓自己的 `npm test`:任何一条红都让这条流水线红。
+
+on:
+  workflow_dispatch:
+    inputs:
+      game_ref:
+        description: '游戏仓要测的分支或 commit'
+        required: true
+        default: 'feat/skins'
+      game_repo:
+        description: '游戏仓(owner/name)'
+        required: false
+        default: 'lilyco-42/Stronghold-Protocol'
+      payload_release:
+        description: '用哪个已发布 payload Release 的 tar 补素材(素材与产物同源,才测得出真机上那份文件)'
+        required: false
+        default: 'payload-v0.2.1-c29'
+      node_version:
+        description: 'Node 版本'
+        required: false
+        default: '22'
+
+concurrency:
+  group: test-game-${{ github.ref }}-${{ inputs.game_ref }}
+  cancel-in-progress: false
+
+jobs:
+  game-suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: checkout 游戏仓的指定分支
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.game_repo }}
+          ref: ${{ inputs.game_ref }}
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+
+      - name: 装依赖(不跑 postinstall)
+        run: |
+          set -euo pipefail
+          # postinstall 会去 vendor 里那份复制,而 vendor 目录本身要靠 payload tar 补 —— 先 --ignore-scripts,
+          # 补完素材再需要时重跑。
+          npm install --ignore-scripts --no-audit --no-fund
+          node -e "console.log('ws', require('ws/package.json').version)"
+
+      - name: 用已发布的 payload tar 补素材(assets/fonts/vendor/local-assets)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REL: ${{ inputs.payload_release }}
+        run: |
+          set -euo pipefail
+          # gh 在没有 token 的 step 里报 "could not find any host configurations":默认 workflow token 不自动
+          # 出现在环境里,必须显式给。仓库是公开的,这个 token 只是让 gh 能说话。
+          mkdir -p "$RUNNER_TEMP/payload"
+          gh release download "$REL" -D "$RUNNER_TEMP/payload" -p '*.tar.gz'
+          tar=$(ls "$RUNNER_TEMP/payload"/*.tar.gz | head -1)
+          echo "素材来自 $tar"
+          mkdir -p "$RUNNER_TEMP/www"
+          tar -xzf "$tar" -C "$RUNNER_TEMP/www"
+          test -f "$RUNNER_TEMP/www/data/assets.json"
+          for d in assets fonts vendor; do
+            if [ -d "$RUNNER_TEMP/www/$d" ]; then
+              mkdir -p "public/$d"
+              cp -a "$RUNNER_TEMP/www/$d/." "public/$d/"
+            fi
+          done
+          [ -f "$RUNNER_TEMP/www/data/local-assets.json" ] && cp "$RUNNER_TEMP/www/data/local-assets.json" data/local-assets.json
+          # 按输出验收,不看退出码:拷了 0 个文件的 cp 也是 0 退出。
+          A=$(find public/assets -type f | wc -l); V=$(find public/vendor -type f | wc -l); F=$(find public/fonts -type f | wc -l)
+          echo "素材文件数 assets=$A vendor=$V fonts=$F"
+          test "$A" -gt 10000 || { echo "素材没拷够(预期 1 万以上)—— 这条测试没意义"; exit 1; }
+          test "$V" -gt 3 || { echo "vendor 没拷进来,pixi 相关的测试会假红"; exit 1; }
+
+      - name: 补增量素材(上游新版本带来的文件,清单说该有就得有)
+        run: |
+          set -euo pipefail
+          # 合并上游之后 manifest 会多出条目;存在性闸门按磁盘文件判,不补就会红。
+          node tools/fetch-assets.mjs 2>&1 | tail -20 || echo "fetch-assets 失败(离线或 CDN 变更)—— 让下一步去红,别在这里掩盖"
+          find public/assets -type f | wc -l
+
+      - name: 游戏仓 npm test(闸门)
+        run: |
+          set -euo pipefail
+          git status --porcelain | head -20
+          npm test 2>&1 | tail -60

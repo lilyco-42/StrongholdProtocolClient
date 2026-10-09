@@ -99,10 +99,29 @@ jobs:
           done
           echo "共 $(find out -type f | wc -l) 个文件，$(du -sh out | cut -f1)"
 
-      - name: 文件名与数量要齐（半份客户端不发）
+      - name: 改成玩家看到的文件名，再核对数量与形态（半份客户端不发）
+        env:
+          TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          # 六个形态：portable.exe + Setup.exe + desktop zip（都来自 stronghold-desktop-win）、apk、ipa、Tauri 安装器。
+          # artifact 里是构建工具的默认名（gradle 的 `app-release.apk`、xcode 的 `Stronghold-ios-unsigned.ipa`），
+          # 而玩家报障时说的是包名。c28 那批带版本与刀号的名字是在本机改名上传的；这条 lane 要自己会改，
+          # 否则发出去的 Release 里会出现两个同名不同代的 `app-release.apk`，没人分得清哪份是哪个内核。
+          NAMEVER="${TAG#v}"          # v0.2.2-c32 -> 0.2.2-c32
+          rename_to() { # glob  → 新名
+            local pat="$1" to="$2" f
+            while IFS= read -r f; do [ -n "$f" ] || continue; mv "$f" "$(dirname "$f")/$to"; echo "改名 -> $to"; done \
+              < <(find out -type f -name "$pat" | head -1)
+          }
+          rename_to 'app-release.apk' "Stronghold-${NAMEVER}-android-release.apk"
+          rename_to 'Stronghold-ios-unsigned.ipa' "Stronghold-${NAMEVER}-ios-unsigned.ipa"
+          rename_to 'StrongholdProtocol-desktop.zip' "StrongholdProtocol-desktop-win-${NAMEVER}.zip"
+          rename_to 'StrongholdProtocolTauri-*-setup.exe' "StrongholdProtocolTauri-${NAMEVER}-setup.exe"
+          # Electron 那两个产物由 electron-builder 的 artifactName 命名（含版本不含刀号），与 c28 一致，不动。
+          # Tauri 的 -dir.zip 是解开的整棵树（~600 MB，调试/取证用）。玩家版从 c28 起就没带过它：
+          # 六个形态各一条 URL 才是玩家看得懂的东西，多塞一个 600 MB 只会让"我该下哪个"变成问题。
+          find out -type f -name '*Tauri*-dir.zip' -printf '跳过（不发给玩家）%P\n' -delete
+
           n=$(find out -type f | wc -l)
           echo "拿到 $n 个文件"
           find out -type f -printf '%p\t%s B\n' | sort
@@ -110,9 +129,11 @@ jobs:
           # 大文件不许"安静地是空的"：小于 1 MB 的一定不是产物本体。
           small=$(find out -type f -size -1M -printf '%p %s\n' | head)
           if [ -n "$small" ]; then echo "这些文件小得不像产物：$small"; exit 1; fi
-          # 数量够不等于形态齐：按文件名核对六个形态，缺哪个就是哪一类玩家装不上（少一个 ipa 不会让数量看起来奇怪）。
+          # 数量够不等于形态齐：按**最终文件名**核对六个形态，缺哪个就是哪一类玩家装不上。
           missing=""
-          for pat in '\.apk$' '\.ipa$' 'Tauri.*setup\.exe$' 'portable\.exe$' 'Setup\.exe$' '\.zip$'; do
+          for pat in "Stronghold-${NAMEVER}-android-release\\.apk$" "Stronghold-${NAMEVER}-ios-unsigned\\.ipa$" \
+                     "StrongholdProtocolTauri-${NAMEVER}-setup\\.exe$" "StrongholdProtocol-desktop-win-${NAMEVER}\\.zip$" \
+                     'StrongholdProtocol-.*-portable\.exe$' 'StrongholdProtocol-.*-Setup\.exe$'; do
             find out -type f | grep -qE "$pat" || missing="$missing $pat"
           done
           if [ -n "$missing" ]; then echo "缺这些形态：$missing"; find out -type f | sort; exit 1; fi
@@ -128,12 +149,15 @@ jobs:
           cat > "$NOTES" <<'NOTES_EOF'
           ${{ inputs.notes_file }}
           NOTES_EOF
-          echo "本地 sha256（先记下来，传完再和 GitHub 报的对一遍）："
-          find out -type f -print0 | sort -z | xargs -0 -n1 sha256sum | tee /tmp/local.sha256
+          # 本地 sha256 先记下来，传完后**逐条与 GitHub 报的 digest 比** —— 只算不比等于没算（这一版原先
+          # 就是这么写的：注释说"传完再对一遍"，代码里没有那一步。注释比代码强是我最常犯的一类错）。
+          mapfile -t FILES < <(find out -type f | sort)
+          for f in "${FILES[@]}"; do printf '%s %s\n' "$(sha256sum "$f" | cut -d' ' -f1)" "$(basename "$f")"; done > /tmp/local.sha256
+          cat /tmp/local.sha256
           # 先只建 Release（--draft），再一个一个传：一次传六个大文件被外层超时杀过，
           # 那次的结果是 tag_name 已经写进 Release、assets 却是 0，`gh release view <tag>` 反而查得到。
           gh release create "$TAG" --draft --title "${{ inputs.title }} $TAG" --notes-file "$NOTES" -R "$GITHUB_REPOSITORY"
-          find out -type f -print0 | sort -z | while IFS= read -r -d '' f; do
+          for f in "${FILES[@]}"; do
             echo "--- 传 $(basename "$f")"
             gh release upload "$TAG" "$f" --clobber -R "$GITHUB_REPOSITORY"
           done
@@ -142,8 +166,23 @@ jobs:
           fi
           gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json isDraft,assets \
             --jq '{isDraft,assets:[.assets[]|{name,size,digest}]}'
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets \
+            --jq '.assets[] | "\(.digest | sub("^sha256:"; "")) \(.name)"' | sort > /tmp/remote.sha256
+          bad=0
+          while read -r hex name; do
+            want=$(awk -v n="$name" '$2==n {print $1; exit}' /tmp/remote.sha256)
+            if [ "$want" != "$hex" ]; then echo "digest 不符：$name 本地=$hex GitHub=${want:-没有这个资产}"; bad=$((bad+1)); fi
+          done < /tmp/local.sha256
+          extra=$(awk 'NR==FNR{a[$2]=1;next} !($2 in a){print $2}' /tmp/local.sha256 /tmp/remote.sha256)
+          if [ -n "$extra" ]; then echo "Release 里有本地没有的资产：$extra"; bad=$((bad+1)); fi
+          test "$bad" = 0 || { echo "核对失败：每个资产的 sha256 都要与本地一致，且一条不多一条不少"; exit 1; }
+          echo "✓ ${#FILES[@]} 个资产的 sha256 与 GitHub 报的逐条一致"
 
       - name: 每个 URL 都要真能匿名取到
+        env:
+          # 这一步没有 checkout，而 `gh release view` 需要 token —— 上一版漏了它，整步死在
+          # "To use GitHub CLI in a GitHub Actions workflow, set the GH_TOKEN"（资产其实已经传完了）。
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           TAG="${{ inputs.tag }}"

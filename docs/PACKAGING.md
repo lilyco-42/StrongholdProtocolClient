@@ -702,6 +702,18 @@ F11 要"新壳 + 新内置资源"两边都齐才生效，分两个 Release 就�
 
 `publish` 默认 `no`：第一次跑只验「补丁能不能打上、闸门过不过」，不产生任何对外可见的东西。
 要出包时先 `draft`（玩家看不到），核对 `build.json` 与 digest 之后再 `gh release edit --draft=false`。
+
+**收口这一步也在 runner 上（`publish-client.yml`）**：c28 那次是我本机 `gh run download` 三个 artifact（约 3.8 GB）
+再逐个上传 —— 那是纯中转，还差点把盘写满。这条 lane 的输入是两条流水线的 run id，产物在对象存储里内部搬一趟即完成。
+它第一次真跑教了三件事，都写进了 lane：① artifact 里的文件名是构建工具的默认名（`app-release.apk`、
+`Stronghold-ios-unsigned.ipa`），玩家报障说的是包名，所以 lane 要按 tag 自己改名，并且**形态核对要对最终文件名判**
+（`\.apk$` 对任何 apk 都成立，等于没判）；② 没有 checkout 的步骤里每个 `gh` 调用都要显式 `-R` 与 `GH_TOKEN`
+（`gh run download` 会先 `git rev-parse`，不是仓库就直接死）；③ Draft 的资产 URL 只有带 token 才取到，
+所以"匿名 200"这一条在 draft 模式下永远红 —— 它属于 `--draft=false` 之后，不是之前。
+
+已发布：`v0.2.2-c32` 六个形态，每条 URL 匿名 200，sha256 与 lane 里算的逐条一致
+（apk `72c54be5…`、ipa `e98795f9…`、desktop zip `fc8411dd…`、portable `1384760e…`、Setup `9a69cd7a…`、Tauri `6d397666…`）。
+Tauri 那份 `-dir.zip`（598 MB 解开的整棵树）不再发给玩家，与 c28 起的六个形态保持一致。
 tag 已存在就直接失败 —— 绝不覆盖已发布的资产。
 
 **第一份由这条 lane 出的包**：`payload-v0.2.2-c30`，资产 `sp-client-payload-0.2.2-c30.tar.gz`

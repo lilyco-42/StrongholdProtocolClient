@@ -16,7 +16,9 @@
 //   0  WebKit's load/parse rows agree with Chromium's (the WebGL and memory rows are reported, not gated — see below)
 //   1  REPRODUCED — WebKit failed a row Chromium passed; the row names are printed
 //   2  the probe is not load-bearing: the page is missing from the tree, `__SPINE_PROBE__` never appeared, the
-//      清单 row is bad, or the negative control (a deliberately absent skeleton) did NOT fail as it must
+//      清单 row is bad, the negative control (a deliberately absent skeleton) did NOT fail as it must,
+//      a gated row-family is absent, **or a path inside the payload 4xx'd while the page ran** (that is a missing
+//      art/css/js file — the thing players report as 「立绘不见了」 — and it must not hide behind a green verdict)
 //
 // Why ② WebGL and ⑦ 连续加载 are not gates. Both are properties of the runner, not of the payload: headless Linux
 // WebGL is a software pipeline no iPhone shares, and ⑦ pushes allocation until the engine gives up, which on a
@@ -67,6 +69,11 @@ console.log(`[spine-probe-check] ${pageUrl}  root=${root}`);
 const GATED = ['① 运行时', '③ 图片', '④ fetch .skel', '④ fetch .atlas', '⑤ acquire', '⑥ 阴性对照'];
 /** Rows printed for every engine but never gated (they measure the runner, not the payload). */
 const REPORT_ONLY = ['② WebGL', '⑦ 连续加载'];
+/**
+ * Paths that have to come out of the payload itself. A 4xx on one of these is a missing file —— which is exactly
+ * what "立绘不见了" is made of —— while `/favicon.ico` and friends are the browser knocking on its own.
+ */
+const INTERNAL_PATH = /^\/(assets|data|js|css|vendor|fonts|webfonts|sim|packs|dev)\//;
 
 const matches = (rows, prefixList) => rows.filter((r) => prefixList.some((p) => r.name.startsWith(p)));
 const badRows = (r, prefixList) => matches(r.rows.filter((x) => x.cls === 'bad'), prefixList);
@@ -78,6 +85,18 @@ async function runEngine(name) {
   try {
     const page = await browser.newPage();
     const consoleErrors = [];
+    // 一次 `console errors(3): … 404 … · Spine: error in texture loader` 说明有文件没取到，却不说是哪个 ——
+    // 而"哪个文件"正是这一页存在的全部理由（CI 第一次给出真结论时就撞到了两条 404）。
+    // 记下每一条非 2xx 的响应 URL；只有包内路径（/assets /data /js …）才算"包缺文件"，
+    // favicon 之类浏览器自己发的不算。
+    const badResponses = [];
+    page.on('response', (r) => {
+      const st = r.status();
+      if (st < 400) return;
+      let p = '';
+      try { p = new URL(r.url()).pathname; } catch { p = r.url(); }
+      badResponses.push({ status: st, path: p });
+    });
     page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text().slice(0, 200)); });
     page.on('pageerror', (e) => consoleErrors.push('pageerror: ' + String(e.message || e).slice(0, 200)));
     const resp = await page.goto(pageUrl, { waitUntil: 'domcontentloaded' });
@@ -86,7 +105,7 @@ async function runEngine(name) {
     const status = resp ? resp.status() : 0;
     if (status !== 200) {
       return {
-        name, httpStatus: status, done: false, rows: [], consoleErrors: [],
+        name, httpStatus: status, done: false, rows: [], consoleErrors, badResponses,
         fatal: `打开 ${pageUrl} 得到 HTTP ${status || '无响应'} —— 文档本身就没起来，后面不必等`,
       };
     }
@@ -110,6 +129,7 @@ async function runEngine(name) {
       protocol: result ? result.protocol : '',
       rows: result ? result.rows : [],
       consoleErrors: consoleErrors.slice(0, 20),
+      badResponses,
     };
   } finally {
     await browser.close();
@@ -145,6 +165,9 @@ for (const n of engines) {
     for (const row of matches(r.rows, [p])) console.log(`     ${row.name} → ${row.value} [${row.cls}]`);
   }
   if ((r.consoleErrors || []).length) console.log(`     console errors(${r.consoleErrors.length}): ${r.consoleErrors.slice(0, 3).join(' | ')}`);
+  for (const h of (r.badResponses || []).slice(0, 8)) {
+    console.log(`     响应 ${h.status} ${h.path}${INTERNAL_PATH.test(h.path) ? '  ← 包内路径' : ''}`);
+  }
   console.log(`     verdict: ${r.verdict || '(无)'}`);
 }
 
@@ -152,6 +175,15 @@ for (const n of engines) {
 for (const n of engines) {
   const r = byEngine[n];
   if (r.fatal) { console.error(`[${n}] FATAL ${r.fatal}`); process.exit(2); }
+  // 包内路径 4xx 优先于一切结论：这一页可以"四层全通过"而 pixi-spine 的贴图回调里报 baseTexture 为 null
+  // —— 那就是立绘少了一块。CI 第一次给出真结论时正是这样（两条 404 + texture loader 报错，页面却说全通过），
+  // 所以名字必须打出来，并且不能让它被"通过"盖过去。
+  const holes = (r.badResponses || []).filter((x) => INTERNAL_PATH.test(x.path));
+  if (holes.length) {
+    console.error(`[${n}] 跑这一页的过程中有 ${holes.length} 个包内路径取不到 —— 这就是"立绘不见了"的那类文件：`);
+    for (const h of holes.slice(0, 12)) console.error(`   ${h.status} ${h.path}`);
+    process.exit(2);
+  }
 }
 const ref = engines.includes('chromium') ? 'chromium' : engines[0];
 const refRows = byEngine[ref].rows;

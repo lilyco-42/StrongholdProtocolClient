@@ -74,6 +74,13 @@ const REPORT_ONLY = ['② WebGL', '⑦ 连续加载'];
  * what "立绘不见了" is made of —— while `/favicon.ico` and friends are the browser knocking on its own.
  */
 const INTERNAL_PATH = /^\/(assets|data|js|css|vendor|fonts|webfonts|sim|packs|dev)\//;
+/**
+ * ⑥ 阴性对照**故意**请求一个不存在的骨架（`real.skel.replace(/[^/]+$/, '__nope__.skel')`），所以它的 404 是这一页
+ * 唯一一条"必须是 404"的路径。把它算进"包缺文件"是我自己造的假警报（CI 实测：两条 404 就是 `__nope__.skel` 与
+ * `__nope__.atlas`，包其实一条不缺）—— 一条会被设计内的东西触发的闸门，教人的是"重跑而不是读结果"。
+ * 这一页的写法改了（那个哨兵字符串变了）就要同步这里，所以它出现在两处注释里并被 ⑥ 那一行的结论兜着。
+ */
+const CONTROL_SENTINEL = /__nope__/;
 
 const matches = (rows, prefixList) => rows.filter((r) => prefixList.some((p) => r.name.startsWith(p)));
 const badRows = (r, prefixList) => matches(r.rows.filter((x) => x.cls === 'bad'), prefixList);
@@ -166,7 +173,8 @@ for (const n of engines) {
   }
   if ((r.consoleErrors || []).length) console.log(`     console errors(${r.consoleErrors.length}): ${r.consoleErrors.slice(0, 3).join(' | ')}`);
   for (const h of (r.badResponses || []).slice(0, 8)) {
-    console.log(`     响应 ${h.status} ${h.path}${INTERNAL_PATH.test(h.path) ? '  ← 包内路径' : ''}`);
+    const tag = CONTROL_SENTINEL.test(h.path) ? '  ← 阴性对照（就要它 404）' : (INTERNAL_PATH.test(h.path) ? '  ← 包内路径' : '');
+    console.log(`     响应 ${h.status} ${h.path}${tag}`);
   }
   console.log(`     verdict: ${r.verdict || '(无)'}`);
 }
@@ -177,8 +185,8 @@ for (const n of engines) {
   if (r.fatal) { console.error(`[${n}] FATAL ${r.fatal}`); process.exit(2); }
   // 包内路径 4xx 优先于一切结论：这一页可以"四层全通过"而 pixi-spine 的贴图回调里报 baseTexture 为 null
   // —— 那就是立绘少了一块。CI 第一次给出真结论时正是这样（两条 404 + texture loader 报错，页面却说全通过），
-  // 所以名字必须打出来，并且不能让它被"通过"盖过去。
-  const holes = (r.badResponses || []).filter((x) => INTERNAL_PATH.test(x.path));
+  // 所以名字必须打出来，并且不能让它被"通过"盖过去。阴性对照的那两条 404 是设计要的，不算缺文件。
+  const holes = (r.badResponses || []).filter((x) => INTERNAL_PATH.test(x.path) && !CONTROL_SENTINEL.test(x.path));
   if (holes.length) {
     console.error(`[${n}] 跑这一页的过程中有 ${holes.length} 个包内路径取不到 —— 这就是"立绘不见了"的那类文件：`);
     for (const h of holes.slice(0, 12)) console.error(`   ${h.status} ${h.path}`);

@@ -191,3 +191,17 @@ try/catch 并把 `ready=` · 棋盘条数 · 报错原文写进 `清单` 那一�
 
 **这一层仍然只有真机能定论**：CI 的两个引擎都在 Linux 上，iPhone 的 Capacitor 自定义 scheme 与手机内存压力不在
 这条路上。修好的意义是让玩家点「立绘自检」能拿到一句**可信**的话，而不是"看着一切正常"。
+
+## 7. 修好之后：WebKit 与 Chromium 在**已发布的 v0.2.2-c32 ipa** 上结论一致
+
+`probe-art-engines.yml` 对着 `Stronghold-0.2.2-c32-ios-unsigned.ipa` 跑完两层：
+
+* 静态图：127 个用例（外加一条必须失败的缺文件对照），chromium 与 webkit 在 fetch / eager / lazy / scrolled /
+  重挂 img 五种取法上逐条一致。
+* Spine 那一层（这一页自己）：两边各 20 行、`① 运行时`/`③ 图片`/`④ fetch .skel`/`④ fetch .atlas`/`⑤ acquire` 全绿，
+  `⑥ 阴性对照` 如期失败（driver 现在会把它的两条 404 标成"就要它 404"，不算缺文件 —— 这条闸门第一次响就是被自己的
+  对照触发的假警报），`⑦ 连续加载 8 个不释放` 两边都是 8/8，`② WebGL` 两边都是 WebGL2（SwiftShader 16K/8K 纹理，
+  与 iPhone 的 GPU 不是一回事，所以只报告）。
+* 结论：这台机器上"图片 → 取文件 → 解析骨架 → 连续加载"四层都过。**剩下的仍是只有真机能分辨的两条**：
+  Capacitor 的自定义 scheme 与手机内存 —— 玩家那边点「立绘自检」现在会给出可分辨的答案，而不是"四层全通过"。
+

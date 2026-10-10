@@ -471,6 +471,26 @@ describe('desktop packaging layout', () => {
   });
 });
 
+test('Electron asar includes every statically imported local module', () => {
+  const pkg = JSON.parse(readFileSync(path.join(ROOT, 'desktop', 'package.json'), 'utf8'));
+  const shipped = new Set(pkg.build.files.filter((f) => !f.startsWith('!')));
+  const pending = [pkg.main];
+  const seen = new Set();
+
+  while (pending.length) {
+    const rel = pending.shift();
+    if (seen.has(rel)) continue;
+    seen.add(rel);
+    assert.ok(shipped.has(rel), `desktop/${rel} is required by the Electron entry but missing from build.files (app.asar)`);
+    const file = path.join(ROOT, 'desktop', rel);
+    assert.ok(existsSync(file), `desktop/${rel} is included in build.files but does not exist`);
+    const source = readFileSync(file, 'utf8');
+    for (const match of source.matchAll(/^\s*(?:import|export)\s+[^\n;]*?\s+from\s+['"](\.[^'"]+)['"]/gm)) {
+      pending.push(path.posix.normalize(path.posix.join(path.posix.dirname(rel), match[1])));
+    }
+  }
+});
+
 describe('desktop shell: a stable loopback origin keeps localStorage', () => {
   // Chromium scopes localStorage/sessionStorage by origin. The shell serves the payload over http://127.0.0.1:<port>,
   // so an OS-assigned port every launch (the old `port: 0`) is a different origin every time — the game's identity
@@ -1248,6 +1268,16 @@ describe('the artifact gate points where the packagers actually put the bytes', 
   // If these two derivations ever drift, the CI gate would either scan a nonexistent directory (loud, it exits 1)
   // or, worse, stop matching the real shipped layout. The mapping lives in the packager configs, not in the workflow.
   const wf = readFileSync(path.join(ROOT, '.github', 'workflows', 'build-clients.yml'), 'utf8');
+
+  test('the Electron entry-module gate checks app.asar after packing and before upload', () => {
+    const desktopJob = wf.slice(wf.indexOf('  desktop:'), wf.indexOf('  android:'));
+    const built = desktopJob.indexOf('- name: 打 Windows 目录版');
+    const checked = desktopJob.indexOf('- name: Electron 主进程模块（产物内，闸门）');
+    const uploaded = desktopJob.indexOf('name: stronghold-desktop-win');
+    assert.ok(built >= 0 && checked > built && uploaded > checked,
+      'Electron asar dependency gate must run after building the bytes and before uploading them');
+    assert.match(desktopJob.slice(checked, uploaded), /node tools\/check-electron-asar\.mjs build\/desktop\/win-unpacked\/resources\/app\.asar/);
+  });
 
   test('electron-builder ships the payload as extraResources named www next to the asar', () => {
     const b = JSON.parse(readFileSync(path.join(ROOT, 'desktop', 'package.json'), 'utf8')).build;

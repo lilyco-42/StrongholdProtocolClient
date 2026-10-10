@@ -33,6 +33,7 @@
       "main.mjs",
       "serve.mjs",
       "trust.mjs",
+      "payload-path.mjs",
       "package.json",
       "!node_modules/**/*"
     ],

@@ -129,6 +129,12 @@ jobs:
             echo "NSIS 安装包没生成"; ls -l build/desktop; exit 1; }
           ls -lh build/desktop/*.exe
 
+      # 在真正的 app.asar 里核验 Electron 主进程需要的文件；只核对源代码/打包配置会漏掉缺失模块。
+      # 曾因 files[] 漏掉 payload-path.mjs 导致 ERR_MODULE_NOT_FOUND，目录版/便携版/安装版均无法启动。
+      - name: Electron 主进程模块（产物内，闸门）
+        shell: bash
+        run: node tools/check-electron-asar.mjs build/desktop/win-unpacked/resources/app.asar
+
       # 壳自己是 29 KB 的 asar，游戏那份 www 是它旁边的 resources/www —— 闸门要落在真正出厂的那份上。
       - name: 零外部依赖（产物内，闸门）
         shell: bash

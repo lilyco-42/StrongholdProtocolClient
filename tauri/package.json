@@ -1,7 +1,7 @@
 {
   "name": "stronghold-protocol-tauri-shell",
   "private": true,
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "《卫戍协议：盟约》Tauri 壳的前端工具位（真正的界面来自 payload www，这里只放 tauri-cli）",
   "scripts": {
     "tauri": "tauri",

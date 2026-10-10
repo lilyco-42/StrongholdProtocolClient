@@ -292,7 +292,10 @@ test('both shells resolve the payload directory by the same rules', () => {
   assert.ok(rustLabels.indexOf('安装目录') < rustLabels.indexOf('开发 checkout'), 'Rust：内置要排在开发 checkout 前');
   assert.ok(!jsLabels.includes('开发 checkout'), 'JS 侧根本不该有 cwd 这一格');
   // 3) 落点的两段目录名要一模一样（更新写在哪、启动时读哪，两处都得对得上）。
-  assert.match(main, new RegExp(`\.join\("${OVERLAY_DIR}"\)\.join\("${CURRENT_LINK}"\)`), 'Rust 的更新落点与 JS 不同名');
+  //    用 includes 而不是 new RegExp：字符串里再套一层正则转义，是这一版红过一次的原因 ——
+  //    `new RegExp(\`\\.join\\(...)\`)` 落到文件里成了 `\.join\(`，永远匹配不上，红的还是闸门自己。
+  const joined = `.join("${OVERLAY_DIR}").join("${CURRENT_LINK}")`;
+  assert.ok(main.includes(joined), `Rust 的更新落点里没有 ${joined}`);
   // 4) "算不算一份 payload"也是同一个判据：两个文件，不是"目录存在"。
   assert.match(main, /fn payload_problem[\s\S]{0,400}?index\.html[\s\S]{0,400}?build\.json/);
   // 5) Rust 手写的 app-data 目录名必须等于 tauri.conf.json 的 identifier，否则写进去的更新下次找不着。

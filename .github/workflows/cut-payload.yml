@@ -101,8 +101,9 @@ jobs:
           mkdir -p "$RUNNER_TEMP/payload"
           # -R 必需:当前目录的 git remote 是客户端仓,而 Release 也在客户端仓 —— 但下一步起我们会 cd 到别处,
           # 显式写死比让 gh 推断便宜且不会指错。
-          gh release download "$REL" -R lilyco-42/StrongholdProtocolClient -D "$RUNNER_TEMP/payload" -p '*.tar.gz'
-          tar=$(ls "$RUNNER_TEMP/payload"/*.tar.gz | head -1)
+          # A release also contains sp-client-code-*.tar.gz (only ~650 files). Never choose that as the art source.
+          gh release download "$REL" -R lilyco-42/StrongholdProtocolClient -D "$RUNNER_TEMP/payload" -p 'sp-client-payload-*.tar.gz'
+          tar=$(ls "$RUNNER_TEMP/payload"/sp-client-payload-*.tar.gz | head -1)
           echo "素材来自 $tar($(stat -c %s "$tar") B)"
           mkdir -p "$RUNNER_TEMP/base"
           tar -xzf "$tar" -C "$RUNNER_TEMP/base"

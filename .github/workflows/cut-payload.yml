@@ -140,17 +140,37 @@ jobs:
         working-directory: game
         run: |
           set -euo pipefail
-          # 这一步不该是决定性的:素材的真相在上一版 payload 里,而 CDN 从美国 runner 不一定拉得到。
-          # 失败只记录,让后面的存在性闸门与文件数去判。
-          node tools/fetch-assets.mjs 2>&1 | tail -15 || echo "[warn] fetch-assets 失败(离线/CDN 变更)—— 继续,靠已拷进来的那批"
+          # 必须先装依赖：fetch-assets 起手就要 @pixi-spine/runtime-3.8（解析 .skel 用），没有它它**一个文件都不下**
+          # 就直接抛错。上一版这条不装依赖，那句 "|| echo 继续,靠已拷进来的那批" 把这件事压成一行 warn，
+          # 于是 c33 一路走到离线闸门才红：12844 个 URL 里 313 个找不到（例如 assets/char/avatar/char_4231_clemnt.png，
+          # 全是上游 0.2.3 新干员那批）。素材的真相在上一版 payload 里，但"新版本清单该有的文件"只能靠这一步补。
+          # 用 npm ci 而不是 npm install：ci 从不改写 package-lock.json，install 会 —— 脏树打出来的包
+          # provenance 闸门必红（c29 那次实测就是 ` M package-lock.json`）。
+          npm ci --ignore-scripts --no-audit --no-fund
+          rc=0
+          node tools/fetch-assets.mjs 2>&1 | tail -25 || rc=$?
+          if [ "$rc" != "0" ]; then
+            echo "[fetch-assets] 退出码 $rc。继续，但缺的文件由下面的存在性闸门判红 —— 不是「靠已拷进来的那批」就算过。"
+          fi
+          # 它顺手会重写登记里的 hash/stats/bytes（有时还有 lock）。那些是要回游戏仓提交的东西，不许烤进 payload；
+          # 丢弃前先把改了什么印出来，别做成静默的。
+          for f in data/assets.json package-lock.json; do
+            if ! git diff --quiet -- "$f" 2>/dev/null; then
+              echo "（丢弃 fetch-assets 对 $f 的改写；要生效请回游戏仓提交并跑 npm test）"
+              git diff --stat -- "$f" || true
+              git checkout -- "$f"
+            fi
+          done
           find public/assets -type f | wc -l
 
       - name: 游戏树必须干净(打了不该打的东西就别出包)
         working-directory: game
         run: |
           set -euo pipefail
-          # 这一步不装依赖:packer 与 fetch-assets 只用 node 内建和游戏仓自己的相对模块,`npm install` 会把
-          # package-lock.json 改脏,而 dirty 的树打出来的包 provenance 闸门必红(c29 那次实测就是 ` M package-lock.json`)。
+          # 依赖由上一步的 npm ci 装（node_modules 与被下载的素材都在 .gitignore 覆盖范围内，不会脏树）。
+          # 这里守的是另一件事：tracked 文件被改动 = build.json 写 dirty:true，这份包就追不到 commit
+          # （c29 那次实测是 ` M package-lock.json` —— 从这一步开始 lane 改用 npm ci，并把 fetch-assets 对
+          #   data/assets.json / package-lock.json 的改写显式丢弃并打印，而不是让它把整条 lane 带脏）。
           git status --porcelain
           DIRTY=$(git status --porcelain | head -20)
           if [ -n "$DIRTY" ]; then

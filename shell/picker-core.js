@@ -239,6 +239,21 @@ export function probeReason({ ok, online, hadPath }) {
 }
 
 /**
+ * Visit servers while keeping simultaneous network probes bounded.
+ * Each server may still test all of its possible WS URLs in parallel.
+ */
+export function forEachLimited(items, limit, visit) {
+  const max = Math.min(items.length, Math.max(1, Math.floor(limit) || 1));
+  let next = 0;
+  return Promise.all(Array.from({ length: max }, async () => {
+    while (next < items.length) {
+      const index = next++;
+      await visit(items[index], index);
+    }
+  }));
+}
+
+/**
  * Is this key event the "换个服务器" hotkey? F2 alone, no modifiers, and not an auto-repeat.
  *
  * Why the rule lives here: the Electron shell intercepts F2 in the *native* layer

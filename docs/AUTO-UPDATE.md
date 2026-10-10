@@ -80,16 +80,22 @@ payload 里 99% 的字节是美术：一条 `assets/` 就 13,342 个文件、约
 
 | 模式 | 做什么 | 会推什么 |
 | --- | --- | --- |
-| `report`（默认，schedule 每天 UTC 18:37 跑的就是它） | 拉上游、找 master 上可达的最大版本 tag、算落后多少提交、做**严格**合并数冲突、把冲突与 `docs/EXT-SURFACE.json` 那 37 个挂载点求交集，写成报告产物 | 什么都不推 |
-| `branch` | 只在冲突数 = 0 时，把合并结果推到 `auto/upstream-sync-<tag>`（推完用 `ls-remote` 核 sha），给 `test-game-branch` / `cut-payload` 当输入 | 只推 `auto/` 分支，**绝不碰 `feat/skins`**（可能是别的会话正在用的那条） |
+| `report`（默认，schedule 每天 UTC 18:37 跑的就是它） | 拉上游、找 master 上可达的最大版本 tag、算自**共同祖先**起落后多少提交与多少个文件、做**严格**合并数冲突、把冲突与 `docs/EXT-SURFACE.json` 那 37 个挂载点求交集、再把 `patches/game-client.patch` 在合并结果上试打一遍（`tools/check-patch-applies.mjs`），写成报告产物 | 什么都不推 |
+| `branch` | 只在**零冲突且补丁打得上**时，把合并结果推到 `auto/upstream-sync-<tag>`（推完用 `ls-remote` 核 sha），给 `test-game-branch` / `cut-payload` 当输入 | 只推 `auto/` 分支，**绝不碰 `feat/skins`**（可能是别的会话正在用的那条） |
 
-为什么先"量"而不是直接自动合：2026-10-10 实测，上游 v0.2.2→v0.2.3 动了 **203 个文件**，其中 **18 个是我们压着
-挂载点的那 37 个文件之一**（`public/index.html`、`public/js/net.js`、`public/js/assets.js`、`public/js/main.js`、
-`public/js/render/units.js`、`public/js/render/app.js`、`public/js/screens/loadout.js`、`shared/protocol.js`、
-`data/assets.json`、i18n 两份 …）。也就是这一刀默认合并要在 18 个文件等人处理。地基是这样的时候开"自动出包 +
-自动发布"，自动化的是制造坏包。
+两个数别混着读：**冲突数**是必须人点掉的文件；**压着挂载点的文件数**是"上游改了我们会挂进去的文件"——合并在那里
+会安静地成功，而我们的补丁上下文可能已经变了。所以 lane 不只数冲突，还直接把补丁试打一遍，因为自动出包真正红的
+就是那一处。基线必须是共同祖先：拿 HEAD 当基线会把自己那 587 处挂载改动也算成"上游动了"（第一版就这么错过一次，
+报出 37/37，按 merge base 其实是 203 个文件里 18 个）。
 
-顺序因此定了：**先把 18/37 压到接近 0**（task #42：功能搬进 `ext/`，上游文件里每个功能只剩一行挂载点），
+为什么先"量"而不是直接自动合：2026-10-10 实测（基线 = 共同祖先 `v0.2.2`），上游 v0.2.3 动了 **203 个文件 / 36 个提交**，
+其中 **18 个落在我们那 37 个挂载点文件上**（`public/index.html`、`public/js/net.js`、`public/js/assets.js`、
+`public/js/render/units.js`、`shared/protocol.js`、`data/assets.json`、i18n 两份 …），而严格合并只在 **2 个文件**冲突：
+`data/assets.json`（已知的合并噪音，按叶子路径逐条比完再重跑 `tools/fetch-assets.mjs`）和
+`public/css/screens/loadout.css`。这两个都有章可循 —— 自动链离"能开"差的是把这两处冲突源头消掉，不是差一个巨大重构。
+地基没好之前开"自动出包 + 自动发布"，自动化的是制造坏包。
+
+顺序因此定了：**冲突降到 0、注入面收缩**（task #42：功能搬进 `ext/`，上游文件里每个功能只剩一行挂载点），
 **再**把 schedule 从"只量"升到"合干净就出包、出包就发 Release"。到那时"零冲突"这一档就真的没人参与了 ——
 lane 自己会推 `auto/` 分支、自己跑套件、自己出包。人要处理的只有"有冲突"那一档：0.2.2 那一刀的实际过程是
 "合并 + 两处测试红 + 自检页两个自坏"，这些正是闸门拦得住的东西，前提是闸门跑在真产物上而不是本地口头结论。

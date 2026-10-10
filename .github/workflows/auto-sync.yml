@@ -3,19 +3,21 @@ name: auto-sync
 # 让"上游又发新版了"从一件人盯的事，变成一条每天自己跑、并且**说实话**的流水线。
 #
 # 为什么要它：目标是"客户端跟着最上游自动更新、自动构建、自动发布 Release"。但"自动合并"今天能不能做，
-# 不是拍脑袋决定的 —— 2026-10-10 实测：上游 v0.2.3 动了 203 个文件，其中 **18 个是我们压着挂载点的那 37 个文件之一**
-# （net.js / assets.js / render/units.js / index.html / shared/protocol.js …）。也就是说默认合并会在 18 个文件上等
-# 待人处理，"自动发布"在这种地基上只会自动化地制造一次坏包。
+# 不是拍脑袋决定的 —— 2026-10-10 按共同祖先（v0.2.2）实测：上游 v0.2.3 动了 **203 个文件**，其中 **18 个是我们压着
+# 挂载点的那 37 个文件之一**；严格合并（不替人解决冲突）在 **2 个文件**上冲突（`data/assets.json`、
+# `public/css/screens/loadout.css`）。这两个数是不同的东西：冲突是要人点的文件，18 是"上游改了我们会挂进去的文件"，
+# 那里合并会安静地成功、但补丁/功能的上下文可能已经变了 —— 所以这条 lane 除了数冲突，还直接把
+# `patches/game-client.patch` 在合并结果上试打一遍（tools/check-patch-applies.mjs）。
 #
 # 所以这条 lane 的角色是**量**，不是替你决定：
-#   report 模式（默认，也是 schedule 跑的模式）：什么都不推，只算"这一刀合过来要冲突几个文件、其中几个压着我们的挂载点"，
-#           以及 EXT-SURFACE 那份清单是不是还跟得上。它每天给一次答案，趋势好坏看得见。
-#   branch 模式：合并干净（零冲突）时，把合并结果推到 `auto/upstream-sync-<tag>`（绝不碰 feat/skins —— 那条分支
+#   report 模式（默认，也是 schedule 跑的模式）：什么都不推，只算"这一刀合过来要冲突几个文件、其中几个压着我们的挂载点、
+#           补丁还打不打得上"。它每天给一次答案，趋势好坏看得见。
+#   branch 模式：零冲突**且**补丁打得上时，把合并结果推到 `auto/upstream-sync-<tag>`（绝不碰 feat/skins —— 那条分支
 #           可能正被人/别的会话用），给后面的 test-game-branch 与 cut-payload 当输入。
-#   有冲突时 branch 模式也不硬合：把冲突文件列出来，然后停下。合并是人的决定，"自动化"不该把这个决定偷走。
+#   有冲突或补丁打不上时 branch 模式也不硬合：把清单列出来，然后停下。合并是人的决定，"自动化"不该把这个决定偷走。
 #
-# 真正的自动化路线（写进 docs/AUTO-UPDATE.md）：先把 18/37 这个数压到接近 0（task #42：功能搬进 ext/，
-# 上游文件里每个功能只剩一行挂载点），再开 schedule 出包 + 自动发布。顺序反了就是自动发坏包。
+# 真正的自动化路线（写进 docs/AUTO-UPDATE.md §5/§6）：冲突降到 0 + 注入面收缩（task #42）之后，
+# 才把 schedule 从"只量"升到"合干净就出包、出包就发 Release"。顺序反了就是自动发坏包。
 
 on:
   workflow_dispatch:
@@ -68,6 +70,14 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      # 补丁（patches/game-client.patch）和它的工具都住在客户端仓，不在这条 lane 的默认 checkout 里；
+      # 要在这跑"上游这一刀之后补丁还打得上吗"，就得把它取下来。客户端仓小，浅克隆即可。
+      - name: checkout 客户端仓（补丁与打包工具）
+        uses: actions/checkout@v4
+        with:
+          path: client
+          fetch-depth: 1
+
       - name: 取最上游，找出最新的 release tag
         id: up
         working-directory: game
@@ -94,33 +104,58 @@ jobs:
           fi
           echo "落后 $(git rev-list --count HEAD..$TIP) 个提交 / 领先 $(git rev-list --count $TIP..HEAD) 个我们自己的提交"
           git log --oneline -1 "$NEWEST" | sed 's/^/上游那一刀: /'
+          # 后面"上游动了哪些文件"必须以此为基线。用 HEAD 当基线是错的：HEAD 里含我们自己那 587 处挂载改动，
+          # `git diff HEAD..upstream/master` 会把我们的差异一起算进去 —— 实测那样会报"37/37 全压着挂载点"，
+          # 而按 merge base 算是 203 个文件里 18 个。数字错了，结论就会跟着错。
+          BASE=$(git merge-base HEAD "$TIP")
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
+          echo "共同祖先 $BASE（$(git log --oneline -1 "$BASE" | cut -d' ' -f2- | cut -c1-60)）"
 
       - name: 已经同步过就直接收工
         if: steps.up.outputs.up_to_date == 'yes'
         run: echo "✅ ${{ env.BASE_REF }} 已包含上游 ${{ steps.up.outputs.newest }} —— 这一跑无事可做，也没推任何东西。"
 
-      - name: 试一次合并，把代价量出来（不改任何东西）
+      - name: 量这一刀的代价（严格合并 + 补丁可否打上），量完把树还原
         if: steps.up.outputs.up_to_date == 'no'
         id: try
         working-directory: game
+        env:
+          NEW: ${{ steps.up.outputs.newest }}
+          GAME: ${{ github.workspace }}/game
+          CLIENT: ${{ github.workspace }}/client
+          PATCH_OUT: ${{ runner.temp }}/patch-check
+          CONFLICTS_FILE: ${{ runner.temp }}/conflicts.txt
         run: |
           set -euo pipefail
           git config user.name 'auto-sync (gate)'; git config user.email 'auto-sync@invalid'
-          NEW="${{ steps.up.outputs.newest }}"
           BASE=$(git rev-parse HEAD)
+          : > "$CONFLICTS_FILE"
           # 必须用**严格**的 --no-commit 合并来量代价。这里不能用 `-X theirs`/`-X ours`：那种合并会替人把冲突"解决"掉，
           # 而且 git merge 一旦成功就落了 commit，后面再合同一个 tag 只会得到 "Already up to date" → 冲突数永远是 0，
           # 这条闸门就成了"自动发坏包"的绿灯。--no-commit 什么都不提交，merge --abort 能干净退回 BASE。
           rc=0
           git merge --no-edit --no-commit "$NEW" >/tmp/strict.out 2>&1 || rc=$?
-          CONFLICTS=$(git diff --name-only --diff-filter=U | grep -c . || true)
+          git diff --name-only --diff-filter=U > "$CONFLICTS_FILE"
+          CONFLICTS=$(grep -c . "$CONFLICTS_FILE" || true)
           echo "--- 合并输出（末 15 行，rc=$rc）---"
           tail -15 /tmp/strict.out 2>/dev/null || true
           echo "冲突文件数 = $CONFLICTS"
-          git diff --name-only --diff-filter=U | sed 's/^/  U /' || true
+          sed 's/^/  U /' "$CONFLICTS_FILE" || true
+          # 零冲突才有意义去试补丁：有冲突时树里带 <<<<<<< 标记，补丁的上下文当然对不上，那种"红"什么也没说。
+          PATCH=skipped
+          if [ "$CONFLICTS" = "0" ]; then
+            patchrc=0
+            node "$CLIENT/tools/check-patch-applies.mjs" --game "$GAME" --out "$PATCH_OUT" || patchrc=$?
+            if [ "$patchrc" = "0" ]; then
+              PATCH=ok
+            else
+              PATCH=fail
+              echo "（补丁检查 rc=$patchrc —— 自动出包正是会在这里红）"
+            fi
+          fi
           git merge --abort 2>/dev/null || true
-          # 阳性对照：这一跑必须真的"试过合并"。rc=0 且没有 U 行 = 真能干净合；但万一 abort 没退回原样，
-          # 下面的挂载点对照量的就是合并后的树了 —— 那 18/37 这个数会凭空变小。所以直接核回去。
+          # 阳性对照：这一跑必须真的"试过合并"，而且把树还原干净 —— 否则后面的挂载点对照量的就是合并后的树，
+          # 那个数会凭空变小。核 HEAD、核工作树，两个都对了才承认上面的数字。
           NOW=$(git rev-parse HEAD)
           if [ "$NOW" != "$BASE" ]; then
             echo "merge --abort 没退回原位（$BASE → $NOW），强制 reset 回 checkout 的那个 commit"
@@ -128,13 +163,17 @@ jobs:
           fi
           test -z "$(git status --porcelain)" || { echo "合并探针之后工作树不干净，后面的数字不作数"; exit 1; }
           echo "conflicts=$CONFLICTS" >> "$GITHUB_OUTPUT"
+          echo "patch=$PATCH" >> "$GITHUB_OUTPUT"
 
       - name: 与我们的挂载点清单对照
         if: steps.up.outputs.up_to_date == 'no'
         working-directory: game
         env:
           NEWEST: ${{ steps.up.outputs.newest }}
+          MERGE_BASE: ${{ steps.up.outputs.base }}
           CONFLICTS: ${{ steps.try.outputs.conflicts }}
+          PATCH: ${{ steps.try.outputs.patch }}
+          CONFLICTS_FILE: ${{ runner.temp }}/conflicts.txt
           REPORT: ${{ runner.temp }}/auto-sync-report.md
         run: |
           set -euo pipefail
@@ -144,41 +183,55 @@ jobs:
           const g = (a) => execFileSync('git', a, { encoding: 'utf8' }).trim();
           const doc = JSON.parse(fs.readFileSync('docs/EXT-SURFACE.json', 'utf8'));
           const ours = Object.keys(doc.files);
-          const touched = new Set(g(['diff', '--name-only', 'HEAD..upstream/master']).split('\n').filter(Boolean));
+          const BASE = process.env.MERGE_BASE;
+          if (!BASE) { console.error('没有 merge base，这一跑没有基线，数字都不作数'); process.exit(2); }
+          // 基线必须是共同祖先，不能是 HEAD：HEAD 里含我们自己的 587 处挂载改动，拿它当基线会把我们的差异
+          // 也算成"上游动了"（实测那样报 37/37，按 merge base 是 203 个文件里 18 个）。
+          const touched = new Set(g(['diff', '--name-only', `${BASE}..upstream/master`]).split('\n').filter(Boolean));
           const hit = ours.filter((f) => touched.has(f));
-          const behind = g(['rev-list', '--count', 'HEAD..upstream/master']);
-          const conflicts = process.env.CONFLICTS === '' ? '?' : process.env.CONFLICTS;
-          console.log(`上游这一刀共动 ${touched.size} 个文件；其中 ${hit.length}/${ours.length} 个是我们压了挂载点的上游文件：`);
+          const behind = g(['rev-list', '--count', `${BASE}..upstream/master`]);
+          const conflicts = (process.env.CONFLICTS || '').trim();
+          const conflicted = fs.existsSync(process.env.CONFLICTS_FILE)
+            ? fs.readFileSync(process.env.CONFLICTS_FILE, 'utf8').split('\n').map((s) => s.trim()).filter(Boolean)
+            : [];
+          const patch = process.env.PATCH || 'skipped';
+          console.log(`上游自共同祖先起 ${behind} 个提交 / ${touched.size} 个文件；其中 ${hit.length}/${ours.length} 个是我们压了挂载点的上游文件：`);
           console.log(hit.map((f) => `  · ${f}`).join('\n') || '  （没有）');
-          console.log(hit.length === 0
-            ? '结论：这一刀没碰我们的注入面 —— 自动合并+自动出包是可考虑的。'
-            : `结论：这一刀会需要人处理 ${hit.length} 个注入点。先把这个数压到 0 附近（task #42：功能搬进 ext/，上游文件里每功能只剩一行挂载点），再谈自动发布。`);
+          console.log(`严格合并冲突 ${conflicts} 个：${conflicted.join(' / ') || '（无）'}`);
+          console.log(`patches/game-client.patch（3 个文件）在合并结果上：${patch}`);
+          const ready = conflicts === '0' && patch === 'ok';
+          const verdict = ready
+            ? `这一刀合得干净、补丁也打得上${hit.length ? `；上游虽然动了 ${hit.length} 个挂载点文件，但都没冲突 —— 自动出包的条件成立，代价由后面的套件与 payload 闸门去判` : ' —— 自动出包+自动发布的条件成立。'}`
+            : `这一刀还要人处理：冲突 ${conflicts} 个 / 压着挂载点 ${hit.length} 个 / 补丁 ${patch}。地基没好之前不要把 schedule 升到"合干净就发"。`;
+          console.log(`结论：${verdict}`);
           fs.writeFileSync(process.env.REPORT, [
             '# auto-sync 报告',
             '',
-            `- fork：${process.env.GITHUB_REPOSITORY} / 分支：${process.env.BASE_REF || ''}`,
+            `- 游戏 fork：${process.env.GAME_REPO}，分支：${process.env.BASE_REF}`,
             `- 上游：${process.env.UPSTREAM_REPO}，最新 tag：${process.env.NEWEST}`,
-            `- 落后上游：${behind} 个提交`,
+            `- 共同祖先（基线）：${BASE}`,
+            `- 上游自基线起：**${behind} 个提交 / ${touched.size} 个文件**`,
             `- 严格合并（不替人解决冲突）的冲突文件数：**${conflicts}**`,
-            `- 上游改动文件总数：${touched.size}`,
+            ...(conflicted.length ? conflicted.map((f) => `  - 冲突：${f}`) : []),
+            `- patches/game-client.patch 在合并结果上：**${patch}**`,
             `- 压着我们挂载点的上游文件：**${hit.length}/${ours.length}**`,
             '',
             hit.map((f) => `- ${f}`).join('\n'),
             '',
-            hit.length === 0
-              ? '这一刀没碰注入面。'
-              : `这一刀要人处理 ${hit.length} 个注入点；把 ${hit.length}/${ours.length} 压到接近 0（task #42）之前，不要开自动出包+自动发布。`,
+            verdict,
             '',
           ].join('\n'));
           NODE_EOF
           echo '--- 报告全文 ---'; cat "$REPORT"
 
-      - name: 合并干净时才推 auto/ 分支（report 模式不推）
-        if: steps.up.outputs.up_to_date == 'no' && env.MODE == 'branch' && steps.try.outputs.conflicts == '0'
+      - name: 合并干净且补丁打得上时才推 auto/ 分支（report 模式不推）
+        if: |
+          steps.up.outputs.up_to_date == 'no' && env.MODE == 'branch'
+          && steps.try.outputs.conflicts == '0' && steps.try.outputs.patch == 'ok'
         working-directory: game
         run: |
           set -euo pipefail
-          # 走到这里 = 上游这一刀没有冲突。仍然只推到 auto/upstream-sync-<tag>：
+          # 走到这里 = 上游这一刀零冲突，且我们的补丁在合并结果上打得上。仍然只推到 auto/upstream-sync-<tag>：
           # feat/skins 可能是别人正在用的分支，这条 lane 不往里面写任何东西。
           NEW="${{ steps.up.outputs.newest }}"
           BR="auto/upstream-sync-${NEW}"

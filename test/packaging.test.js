@@ -11,6 +11,7 @@
 
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import http from 'node:http';
 import zlib from 'node:zlib';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, statSync, symlinkSync, renameSync } from 'node:fs';
@@ -201,6 +202,53 @@ describe('game-repo contract', { skip: GAME_ROOT ? false : 'no Stronghold-Protoc
       const cssAt = html.indexOf('/css/shell-display.css');
       assert.ok(cssAt !== -1, 'index.html must link /css/shell-display.css');
       assert.ok(cssAt > html.lastIndexOf('/css/devices.css'), 'the shell stylesheet is loaded last');
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+    }
+  });
+});
+
+// auto-sync.yml 用 tools/check-patch-applies.mjs 的退出码决定"上游这一刀之后能不能自动出包"。一条只会报 0 的
+// 检查比没有检查更糟（它给绿灯），所以这里把三种出口都钉住：阴性对照（树漂移了必须报 3）、"其实什么都没检"
+// （缺文件必须报 2）、阳性（真树报 0）。前两条不需要游戏仓 checkout —— ci.yml 上没有游戏仓，阳性那条会显式 skip。
+describe('tools/check-patch-applies.mjs exit codes', () => {
+  const run = (args) => spawnSync(process.execPath, [path.join(ROOT, 'tools', 'check-patch-applies.mjs'), ...args], { encoding: 'utf8' });
+
+  test('漂移的树报 3：这条检查真的会红', () => {
+    const out = mkdtempSync(path.join(tmpdir(), 'sp-pc-out-'));
+    const drift = mkdtempSync(path.join(tmpdir(), 'sp-pc-drift-'));
+    try {
+      for (const f of PATCHED_FILES) write(drift, `public/${f}`, 'export {};\n');
+      const bad = run(['--game', drift, '--out', path.join(out, 'drift')]);
+      assert.equal(bad.status, 3, `期望 3，实际 ${bad.status}：${bad.stdout}${bad.stderr}`);
+      assert.match(bad.stdout, /补丁打不上/);
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+      rmSync(drift, { recursive: true, force: true });
+    }
+  });
+
+  test('树里根本没有那几个文件时报 2，不是"补丁没问题"', () => {
+    const out = mkdtempSync(path.join(tmpdir(), 'sp-pc-out-'));
+    const empty = mkdtempSync(path.join(tmpdir(), 'sp-pc-empty-'));
+    try {
+      const none = run(['--game', empty, '--out', path.join(out, 'none')]);
+      assert.equal(none.status, 2, `期望 2，实际 ${none.status}：${none.stdout}${none.stderr}`);
+      assert.match(none.stderr, /这一跑什么都没检/);
+      const usage = run([]);
+      assert.equal(usage.status, 2, `少参数必须报 2，实际 ${usage.status}`);
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+      rmSync(empty, { recursive: true, force: true });
+    }
+  });
+
+  test('真树报 0', { skip: GAME_ROOT ? false : '旁边没有 Stronghold-Protocol checkout' }, () => {
+    const out = mkdtempSync(path.join(tmpdir(), 'sp-pc-out-'));
+    try {
+      const good = run(['--game', GAME_ROOT, '--out', path.join(out, 'good')]);
+      assert.equal(good.status, 0, `${good.stdout}${good.stderr}`);
+      assert.match(good.stdout, /补丁在这份游戏树上打得上/);
     } finally {
       rmSync(out, { recursive: true, force: true });
     }

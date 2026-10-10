@@ -14,6 +14,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { MIME, AUDIO_EXTS, LONG_CACHE_DIRS, DEFAULT_PORT, PORT_SEARCH, cacheControlFor, createStaticServer } from '../desktop/serve.mjs';
+import { CURRENT_LINK, OVERLAY_DIR, wwwCandidates } from '../desktop/payload-path.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const RUST = fs.readFileSync(path.join(ROOT, 'tauri', 'src-tauri', 'src', 'server.rs'), 'utf8');
@@ -267,4 +268,36 @@ test('a second launch is caught by a kernel object before the port is bound', ()
     '换了端口必须弹一句解释（探针模式下 popup 自己会跳过）');
   const cargo = fs.readFileSync(path.join(ROOT, 'tauri', 'src-tauri', 'Cargo.toml'), 'utf8');
   assert.ok(!/windows-sys|windows = /.test(cargo), '这条路径刻意不用 windows 绑定 crate');
+});
+
+// 两个壳对"这一跑用哪份 payload"必须给同一个答案（docs/AUTO-UPDATE.md §3 第 1 步）。这条是自动更新的地基：
+// 落点写错、或者更新的优先级排错，症状是"玩家说更新了但游戏还是旧的"——这种反馈最难查，因为两边都没报错。
+// 所以不比标签措辞（Rust 那边多了"安装目录/当前目录"两个 JS 没有的候选），只比**规则**。
+test('both shells resolve the payload directory by the same rules', () => {
+  const main = fs.readFileSync(path.join(ROOT, 'tauri', 'src-tauri', 'src', 'main.rs'), 'utf8');
+  const jsLabels = wwwCandidates({ env: { SP_WWW: 'X' }, resourcesPath: 'R', userData: 'U', devDir: 'D' }).map((c) => c.source);
+
+  // 1) $SP_WWW 永远第一（它是我们调试时唯一能确定生效的一条），已应用的更新紧跟其后。
+  assert.equal(jsLabels[0], 'SP_WWW');
+  assert.equal(jsLabels[1], '已应用的更新');
+  // 只在 `let cands:` 那一段里读标签：整个文件里 `("x", Some(` 这个形状还会出现在别处，
+  // 全文件扫会把不相干的元组也算进清单，那条"内置排在开发 checkout 前"的断言就成了看运气的。
+  const block = main.slice(main.indexOf('let cands:'), main.indexOf('first_usable_payload(&cands)'));
+  assert.ok(block.length > 60 && block.includes('SP_WWW'), '没定位到 locate_www 的候选清单');
+  const rustLabels = [...block.matchAll(/\(\s*"([^"]+)",\s*(?:std::env::var|app_data_dir|Some\()/g)].map((m) => m[1]);
+  assert.ok(rustLabels.length >= 4, `从 Rust 里没读出候选清单：${rustLabels.join(',')}`);
+  assert.equal(rustLabels[0], 'SP_WWW');
+  assert.equal(rustLabels[1], '已应用的更新');
+  // 2) 内置那份必须排在"开发 checkout"之前：一个躺在工作目录里的 www/ 不许盖掉装好的游戏。
+  assert.ok(rustLabels.indexOf('安装目录') < rustLabels.indexOf('开发 checkout'), 'Rust：内置要排在开发 checkout 前');
+  assert.ok(!jsLabels.includes('开发 checkout'), 'JS 侧根本不该有 cwd 这一格');
+  // 3) 落点的两段目录名要一模一样（更新写在哪、启动时读哪，两处都得对得上）。
+  assert.match(main, new RegExp(`\.join\("${OVERLAY_DIR}"\)\.join\("${CURRENT_LINK}"\)`), 'Rust 的更新落点与 JS 不同名');
+  // 4) "算不算一份 payload"也是同一个判据：两个文件，不是"目录存在"。
+  assert.match(main, /fn payload_problem[\s\S]{0,400}?index\.html[\s\S]{0,400}?build\.json/);
+  // 5) Rust 手写的 app-data 目录名必须等于 tauri.conf.json 的 identifier，否则写进去的更新下次找不着。
+  const conf = JSON.parse(fs.readFileSync(path.join(ROOT, 'tauri', 'src-tauri', 'tauri.conf.json'), 'utf8'));
+  const idm = /const APP_DATA_NAME: &str = "([^"]+)";/.exec(main);
+  assert.ok(idm, 'Rust 里要有 APP_DATA_NAME 这个常量');
+  assert.equal(idm[1], conf.identifier, 'APP_DATA_NAME 与 tauri.conf.json 的 identifier 不一致');
 });

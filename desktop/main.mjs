@@ -25,11 +25,27 @@ import { fileURLToPath } from 'node:url';
 import { existsSync, appendFileSync, statSync, writeFileSync } from 'node:fs';
 import { app, BrowserWindow, Menu, dialog, shell } from 'electron';
 import { createStaticServer, DEFAULT_PORT } from './serve.mjs';
+import { resolveWww, wwwCandidates } from './payload-path.mjs';
 import { describeCertificate, fingerprintOf, hostKey, isTrusted, loadTrusted, remember, saveTrusted, shortFingerprint } from './trust.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-/** Payload root: resources/www in a packaged app, build/client/www when running from the repo (`npm run client:desktop:dev`). */
-const WWW = app.isPackaged ? path.join(process.resourcesPath, 'www') : path.join(HERE, '..', 'build', 'client', 'www');
+/**
+ * Payload root, best-first: `$SP_WWW` → an applied update under `<userData>/payload/current` → the copy inside the
+ * installer → a repo build (what `npm run client:desktop:dev` produces). The order and the "is this a payload" check
+ * live in payload-path.mjs so the Tauri shell answers with the same list; a broken update must never cost a player
+ * the game, so an unusable overlay is skipped and the reason is kept for the log line below.
+ */
+const WWW_PICK = resolveWww({
+  candidates: wwwCandidates({
+    env: process.env,
+    resourcesPath: app.isPackaged ? process.resourcesPath : undefined,
+    userData: app.getPath('userData'),
+    devDir: app.isPackaged ? undefined : path.join(HERE, '..'),
+  }),
+  isFile: (p) => existsSync(p) && statSync(p).isFile(),
+});
+const WWW = WWW_PICK.dir
+  || (app.isPackaged ? path.join(process.resourcesPath, 'www') : path.join(HERE, '..', 'build', 'client', 'www'));
 const TITLE = '卫戍协议：盟约 · STRONGHOLD PROTOCOL';
 
 /**
@@ -47,6 +63,12 @@ function log(...args) {
   } catch { /* a read-only profile must not break the game */ }
   console.log(line);
 }
+
+// Which payload this run serves, and why a newer one was not taken: the answer to "我更新了没生效" must be in the
+// file the player can send us, not reconstructable only from the source. `rejected` is the auto-updater's whole
+// safety story — an applied update that is broken says so here and still plays the bundled game.
+log(`payload 来源：${WWW_PICK.source || '(没有一个候选可用，退回默认)'} → ${WWW}`);
+for (const r of WWW_PICK.rejected) log(`  跳过 ${r.source}（${r.dir}）：${r.why}`);
 
 /** `--server host:port` / `--server=host:port` (see the header). */
 function argValue(name) {

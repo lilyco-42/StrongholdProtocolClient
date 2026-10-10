@@ -37,12 +37,19 @@ payload 里 99% 的字节是美术：一条 `assets/` 就 13,342 个文件、约
 
 ## 3. 壳侧的落地顺序（还没做完，按这个顺序做）
 
-1. **payload 位置要能被换** —— Tauri 侧已经有 `locate_www()`：`$SP_WWW` → 安装目录 `www/` → exe 旁边 → 开发 checkout。
+1. ✅ **payload 位置能被换（已做）** —— Tauri 侧已经有 `locate_www()`：`$SP_WWW` → 安装目录 `www/` → exe 旁边 → 开发 checkout。
    Electron 侧是写死的 `process.resourcesPath/www`（`desktop/main.mjs:32`），要补成同一条链 + `<userData>/payload/current`。
    这一步不改任何行为，只是让"外面那份"能被选中。
 2. **解析与切换**：`<userData>/payload/<cut>/` 解包，成功后原子地把 `current` 指针换过去；失败留在上一份。
    启动时如果 `current` 指向的目录不合法（缺 `index.html` 或 `build.json` 读不出），回落到安装目录内置那份。
    回落到内置是硬要求：**自动更新绝不能变成"有人打不开游戏"**。
+   实现：`desktop/payload-path.mjs`（一份纯函数，`test/payload-path.test.js` 直接跑它）与
+   `tauri/src-tauri/src/main.rs` 的 `locate_www()` / `payload_problem()` / `app_data_dir()`。
+   两条规则由 `test/tauri-parity.test.js` 钉住：`$SP_WWW` → 已应用的更新 → 内置 → 开发 checkout 的次序，
+   以及"合格 = 有 `index.html` **和** `build.json`"。Electron 每次启动把选中的来源与被跳过的原因写进
+   `<userData>/client.log`，所以"我更新了没生效"有地方可查。
+   两边的 userData 不是同一个目录（Electron 按产品名，Tauri 按 identifier），也就是各管各的更新 —— 目前不共享，
+   共享要先把落点从各家的数据目录里搬出来，那是另一笔账。
 3. **取清单与下载**：读 `https://github.com/.../releases/…`（公开仓，匿名可读）。超时/失败静默，不挡启动、不弹全屏错误。
 4. **完整性**：sha256 是底线。真正要防的是"仓库被写到就能给所有客户端推代码"，所以清单本身要签：
    一把 ed25519 私钥在 CI secret 里，公钥烤进壳，验签不过就不应用。没有这一步之前，这条链路只能算"预发布"。

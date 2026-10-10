@@ -737,3 +737,36 @@ payload Release 只增不改，编号跳号是有记录的（c16 也这样决定
 `--target` 这一脚踩过：`--target` 这一脚踩过：`gh release create --target <游戏的 sha>` 得到 `HTTP 422 Release.target_commitish is invalid`。
 Release 建在**客户端仓**上，target 必须是那个仓里的 ref/commit；游戏的出处由 `build.json` + provenance 闸门 + notes 承担，
 不需要（也不应该）由 tag 指向哪个 commit 来说。
+
+### 20.5 c33：第一刀带上「代码增量 + 清单」，也是 v0.2.3 那一刀
+
+上游 v0.2.3 合进 `feat/skins`（游戏仓 `2cb8387e`，两处冲突按"上游为底 + 我们独有整块补回"解，
+`data/assets.json` 见 `docs/AUTO-UPDATE.md` §5 的核对法）之后，`cut-payload` 出了 `payload-v0.2.3-c33`：
+
+| 资产 | 大小 | sha256（GitHub 报的 digest） |
+| --- | --- | --- |
+| `sp-client-payload-0.2.3-c33.tar.gz` | 605,331,987 B | `322b17ebd38056c4e3920f6d302e5da31bf2a52defa8ad0546e7d85886bd9ae6` |
+| `sp-client-code-v0.2.3-c33.tar.gz` | 10,443,390 B / 657 个文件 | `7555035406c941dffc9e787e8f2a57c164ecf59383431976ec00a1d20b390376` |
+| `sp-client-manifest-v0.2.3-c33.json` | 618 B | `6b052ccfd5d8b4c1fd5b3abbd9bf66e754e7495866648ee98b6263bbe7d03ef9` |
+
+代码增量是整包的约 **1/58**。清单里 `art.digest=sha256:dffe9b678634…`、`art.files=13,655`（c32 是 13,342），
+`game.describe=v0.2.3-71-g7b8a04ad`、`dirty=false`；`code.sha256` 与 GitHub 自己报的资产 digest 逐字节相同 ——
+这两条互为对照：清单说的那个 hash 真的能对上发布出去的资产，不是自说自话。
+**c32 及更早的 payload Release 里没有这两样**（只有整包 tar），所以"客户端读清单取增量"从 c33 起才有东西可读。
+
+这一刀踩到 / 修掉的三件事，都记在这儿因为它会再踩：
+
+1. **`fetch-assets` 需要依赖，而那一步以前故意不装。** 它起手就要 `@pixi-spine/runtime-3.8`，缺了它
+   **一个文件都不下**就抛错；当时的 `|| echo "继续,靠已拷进来的那批"` 把它压成一行 warn，于是这一刀一路走到
+   离线闸门才红：`12844 个 URL 里 313 个找不到`（全是上游新干员的素材）。改成先 `npm ci --ignore-scripts`
+   —— 用 `ci` 而不是 `install`，因为 `install` 会改写 `package-lock.json`，脏树打出来的包 provenance 闸门必红
+   （c29 实测过）。它顺手改写的 `data/assets.json` / `package-lock.json` 现在先印 diff 再丢弃。
+2. **`publish-client` 最后一道闸门在 Draft 模式下必红**：`gh api releases/tags/<tag>` 这个端点**看不见 Draft**，
+   而 `as_draft` 默认就是 `yes`。run 38030915965 六个产物全传完、digest 也逐条对过了，红的仍是核对本身。
+   改成先 `gh release view` 拿 release id，再按 id 列 assets。
+3. **`build-clients` 的 `push: tags: v*` 老触发已删**：发布玩家版会建 git tag，tag 一出现就又触发一整套构建，
+   而那一次用的是 `payload_url` 的默认值（`dl.lain42.top`，已 403）—— 看着像"发版顺带多验一次"，
+   实验的是另一份料。出哪个 payload 必须显式派发。
+
+玩家版 `v0.2.3-c33` 的六个形态与 digest 见 `gh release view v0.2.3-c33 --json assets`；
+`Latest` 已指向它（`payload-v0.2.3-c33` 不是 Latest，玩家落地页应该是客户端那个）。

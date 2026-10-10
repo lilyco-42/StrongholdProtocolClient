@@ -19,16 +19,16 @@ npm test                    # 打包流程的单元/契约测试（无游戏 che
 
 ## 玩家上手（不用会编译，只要装和玩）
 
-东西在 GitHub 的 **Releases** 里（仓库页 → Releases → 最新的 `v0.2.2-c32`），六个形态**都在同一个 Release 里**（从 c28 起 Tauri 安装器也放这儿了 —— F11 全屏要"新壳 + 新内置资源"两边都齐才生效，分两个 Release 反而容易装错）：
+东西在 GitHub 的 **Releases** 里（仓库页 → Releases → 最新的 `v0.2.3-c33`），六个形态**都在同一个 Release 里**（从 c28 起 Tauri 安装器也放这儿了 —— F11 全屏要"新壳 + 新内置资源"两边都齐才生效，分两个 Release 反而容易装错）：
 
 | 你要玩的设备 | 下载 | 大小 | 怎么装 |
 |---|---|---|---|
-| Windows 10/11（64 位）· 推荐 | `StrongholdProtocol-desktop-win-0.2.2-c32.zip` | 738,470,536 B（约 704 MiB） | 解压，**整个文件夹一起放着**，双击里面的 `StrongholdProtocol.exe` |
-| Windows · 单文件（**启动慢就换上面目录版**） | `StrongholdProtocol-0.2.2-portable.exe` | 637,875,295 B（约 608 MiB） | 双击即可，但**每次启动都要把 865 MB 解到临时目录**（实测占 974 MB），首屏慢十几到几十秒 |
-| Windows · 安装器 | `StrongholdProtocol-0.2.2-Setup.exe` | 638,085,459 B（约 608 MiB） | 装到开始菜单，之后与目录版是同一个东西 |
-| 安卓手机（Android 7.0 及以上） | `Stronghold-0.2.2-c32-android-release.apk` | 629,447,501 B（约 600 MiB） | 传到手机 → 点开除 → 允许"未知来源/安装未知应用"。**从 c22 及更早升级上来要先卸载一次**（签名换成固定钥匙了，见上那条说明） |
-| iPhone（iOS 15 及以上） | `Stronghold-0.2.2-c32-ios-unsigned.ipa` | 604,672,130 B（约 576 MiB） | **未签名**，要用你自己的 Apple ID 现签，见下一节 |
-| Windows · 试验（Tauri 壳，不用 Electron） | `StrongholdProtocolTauri-0.2.2-c32-setup.exe` | 549,213,414 B（约 523.8 MiB） | 比上面的安装器**小 84.8 MiB**；靠系统 WebView2。c25 去掉启动时的黑控制台窗口并让 **F2 重新选服务器可用**；c26 做了四件事：**一局里的几百个文件走少数几条连接**、**F12 能打开调试面板**（报"白屏/立绘没出来"时截图用得上）、第二次双击不再"没反应"、端口被占会当场说明而不是让你以为存档丢了；**c28 补上 F11 全屏**（以前只有 Electron 版有）。**c32 起桌面壳修掉一条 Windows 上的启动失败**：端口落在系统预留段（Hyper-V / WSL2 / Docker 会占一整段动态端口）时，原来会直接报错退出，现在按下一个可用端口接着找 |
+| Windows 10/11（64 位）· 推荐 | `StrongholdProtocol-desktop-win-0.2.3-c33.zip` | 743,575,798 B（约 709 MiB） | 解压，**整个文件夹一起放着**，双击里面的 `StrongholdProtocol.exe` |
+| Windows · 单文件（**启动慢就换上面目录版**） | `StrongholdProtocol-0.2.3-portable.exe` | 642,604,807 B（约 613 MiB） | 双击即可，但**每次启动都要把内置资源解到临时目录**（按 payload 大小；c32 那一次实测解出 974 MB），首屏慢十几到几十秒 |
+| Windows · 安装器 | `StrongholdProtocol-0.2.3-Setup.exe` | 642,814,970 B（约 613 MiB） | 装到开始菜单，之后与目录版是同一个东西 |
+| 安卓手机（Android 7.0 及以上） | `Stronghold-0.2.3-c33-android-release.apk` | 635,003,900 B（约 606 MiB） | 传到手机 → 点开除 → 允许"未知来源/安装未知应用"。**从 c22 及更早升级上来要先卸载一次**（签名换成固定钥匙了，见上那条说明） |
+| iPhone（iOS 15 及以上） | `Stronghold-0.2.3-c33-ios-unsigned.ipa` | 609,804,233 B（约 582 MiB） | **未签名**，要用你自己的 Apple ID 现签，见下一节 |
+| Windows · 试验（Tauri 壳，不用 Electron） | `StrongholdProtocolTauri-0.2.3-c33-setup.exe` | 553,940,689 B（约 528.3 MiB） | 比上面的安装器**小 84.8 MiB**；靠系统 WebView2。c25 去掉启动时的黑控制台窗口并让 **F2 重新选服务器可用**；c26 做了四件事：**一局里的几百个文件走少数几条连接**、**F12 能打开调试面板**（报"白屏/立绘没出来"时截图用得上）、第二次双击不再"没反应"、端口被占会当场说明而不是让你以为存档丢了；**c28 补上 F11 全屏**（以前只有 Electron 版有）。**c32 起桌面壳修掉一条 Windows 上的启动失败**：端口落在系统预留段（Hyper-V / WSL2 / Docker 会占一整段动态端口）时，原来会直接报错退出，现在按下一个可用端口接着找 |
 
 > **安卓升级说明（2026-10-07）**：c22 及更早的 APK 是用"每个构建机器现生成的一次性 debug 签名"打的，
 > 所以**从那些版本升级时会报「与已安装应用签名不同 (-7)」，需要先卸载再装**——卸载会清掉本机的干员调配与设置
@@ -52,8 +52,8 @@ https://dl.lain42.top/downloads/stronghold-protocol/0.1.3-c11/Stronghold-0.1.3-c
 不确定下到的文件是不是完好的，对一下指纹（GitHub 每个资产的 `digest` 就是 sha256）：
 
 ```
-sha256sum Stronghold-0.2.2-c32-android-release.apk
-gh api repos/lilyco-42/StrongholdProtocolClient/releases/tags/v0.2.2-c32 --jq '.assets[]|[.name,.digest]|@tsv'
+sha256sum Stronghold-0.2.3-c33-android-release.apk
+gh api repos/lilyco-42/StrongholdProtocolClient/releases/tags/v0.2.3-c33 --jq '.assets[]|[.name,.digest]|@tsv'
 ```
 两个 sha256 必须**逐字节相等**才算下载完好（不相等多半是没下全，重下即可）。
 
@@ -76,16 +76,16 @@ gh api repos/lilyco-42/StrongholdProtocolClient/releases/tags/v0.2.2-c32 --jq '.
 | 最低系统 | **iOS 15 及以上**（Capacitor 8.5.2 的 SPM 声明 `.iOS(.v15)`，不是随手写的数字） |
 | 有效期 | 免费 Apple ID 签出来的包 **7 天过期**，到期要连电脑重签一次 |
 | 数量限制 | 同一个免费 Apple ID 最多 **3 个**自签应用（其中还要占一个给签名工具本身） |
-| 体积 | 约 576 MiB（c32 实测 604,672,130 B；美术音频全在包里，进对局不下载），建议 WiFi 下装，手机留出 2 GB 空闲（www 解出来本身就有 865 MB） |
+| 体积 | 约 582 MiB（c33 实测 609,804,233 B；美术音频全在包里，进对局不下载），建议 WiFi 下装，手机留出 2 GB 空闲（www 解出来本身就有 800 MB 多，c32 那一次实测 865 MB） |
 | 声音 | 首次点一下屏幕才有 BGM —— iOS 要求音频必须由用户手势解锁，游戏里已做（`audio.js` 的 `pointerdown/touchend/click/keydown`） |
 | 方向 | 锁横屏（`Info.plist` 只声明 LandscapeLeft/Right）；刘海区已按 `viewport-fit=cover` + safe-area 处理 |
 | 连自建服 | 已放开 ATS，所以 `ws://192.168.1.9:3000` 这种明文地址能连（对应安卓的 `allowMixedContent`） |
 | 立绘显示不上 | **从 c28 起**：打开客户端的选择页 →「多人游戏」→ 右上角「立绘自检」。它把「静态图片 / 取骨架文件 / Spine 解析 / 连续加载多个」分四层各测一次，页面顶部直接给一句结论，底下有「复制结果」——把这个发给开发者比截图有用得多（此前已排掉"文件没打进包"和"iOS WebKit 读不了这批图"两条，剩下的只有真机能分辨）。**c32 修的是这一页自己**：以前它问美术索引用错了键，在任何设备上都只会说"没找到带 spine 的干员"，而顶部结论却写"四层全通过" —— 现在它要么给出真正的分层结论，要么明确说"这一页什么都没证明"。按它会离开当前连接，不影响存档。查法与已排除项见 `docs/IOS-ART.md` |
 
-下载（和 exe/apk 在同一个 Release 页 `v0.2.2-c32`）：
+下载（和 exe/apk 在同一个 Release 页 `v0.2.3-c33`）：
 
 ```
-https://github.com/lilyco-42/StrongholdProtocolClient/releases/download/v0.2.2-c32/Stronghold-0.2.2-c32-ios-unsigned.ipa
+https://github.com/lilyco-42/StrongholdProtocolClient/releases/download/v0.2.3-c33/Stronghold-0.2.3-c33-ios-unsigned.ipa
 ```
 
 装到手机的步骤（玩家自己做，我们不提供证书也不代签）：

@@ -27,11 +27,11 @@ on:
         description: '从哪个已发布 Release 取产物（探测的对象是发出去的东西，不是仓库里的源码）'
         required: true
         # c28 起包里才有 /dev/spine-probe.html 这一页；拿 c24 跑会在 Spine 那一步红着说「缺页」。
-        default: 'v0.2.1-c28'
+        default: 'v0.2.3-c33'
       asset:
         description: '资产文件名（ipa / apk / 桌面 zip 都行，web_subpath 要跟着改）'
         required: true
-        default: 'Stronghold-0.2.1-c28-ios-unsigned.ipa'
+        default: 'Stronghold-0.2.3-c33-ios-unsigned.ipa'
       web_subpath:
         description: '压缩包里 web 根的路径：ipa=Payload/App.app/public，apk=assets/public'
         required: true

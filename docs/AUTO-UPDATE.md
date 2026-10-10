@@ -37,8 +37,9 @@ payload 里 99% 的字节是美术：一条 `assets/` 就 13,342 个文件、约
 
 ## 3. 壳侧的落地顺序（还没做完，按这个顺序做）
 
-1. ✅ **payload 位置能被换（已做，run 38024617803：cargo test + 那条一致性闸门都过）** —— Tauri 侧已经有 `locate_www()`：`$SP_WWW` → 安装目录 `www/` → exe 旁边 → 开发 checkout。
-   Electron 侧是写死的 `process.resourcesPath/www`（`desktop/main.mjs:32`），要补成同一条链 + `<userData>/payload/current`。
+1. ✅ **payload 位置能被换（两个壳都已做，run 38024617803：cargo test + 那条一致性闸门都过）** —— Tauri 侧是
+   `locate_www()`，Electron 侧以前是写死的 `process.resourcesPath/www`，现在两边同一顺序：
+   `$SP_WWW` → `<userData>/payload/current`（已应用的更新）→ 安装目录内置那份 → 开发 checkout。
    这一步不改任何行为，只是让"外面那份"能被选中。
 2. **解析与切换**：`<userData>/payload/<cut>/` 解包，成功后原子地把 `current` 指针换过去；失败留在上一份。
    启动时如果 `current` 指向的目录不合法（缺 `index.html` 或 `build.json` 读不出），回落到安装目录内置那份。
@@ -52,8 +53,12 @@ payload 里 99% 的字节是美术：一条 `assets/` 就 13,342 个文件、约
    两边的 userData 不是同一个目录（Electron 按产品名，Tauri 按 identifier），也就是各管各的更新 —— 目前不共享，
    共享要先把落点从各家的数据目录里搬出来，那是另一笔账。
 3. **取清单与下载**：读 `https://github.com/.../releases/…`（公开仓，匿名可读）。超时/失败静默，不挡启动、不弹全屏错误。
-4. **完整性**：sha256 是底线。真正要防的是"仓库被写到就能给所有客户端推代码"，所以清单本身要签：
-   一把 ed25519 私钥在 CI secret 里，公钥烤进壳，验签不过就不应用。没有这一步之前，这条链路只能算"预发布"。
+4. **完整性：sha256 就够，这一版不签名**（2026-10-10 按"只有一个人开发"的现实定，task #75）。
+   要防的威胁是"包在下路上被换掉/截断"，sha256 + 先验后解已经覆盖；清单签名要防的是"能写仓库的人给所有客户端推代码"，
+   而那个权限本来就等于能改这份代码本身 —— 单人项目里加一把 ed25519 私钥只是把同一道门做成两个钥匙孔，
+   代价是密钥丢了所有客户端一起变砖。**什么时候要回头补签**：出现第二个能推的人 / 出现第二个下载源（镜像、OSS）/
+   清单开始承载"哪台服务器可信"这类授权信息。清单里有 `schema` 字段，到时候升到 2 而不用改旧客户端的解析。
+   底线仍然是：**验 sha256 通过才解包**，解到临时目录再原子换 `current`。
 5. **canary / stable 两个指针**：自动出的包先进 canary；stable 由人（或"绿满 N 天且没人报障"的规则）往前挪。
    在线玩家 300 多，上游一次坏合并直接自动全量是拿玩家试错。
 
@@ -68,9 +73,41 @@ payload 里 99% 的字节是美术：一条 `assets/` 就 13,342 个文件、约
 还有一个共同前提：自动更新要求玩家连得到 GitHub。大陆住宅网络对 GitHub 是时好时坏（实测过 Node 直连被
 `ECONNRESET` 而 curl 同一 URL 200），所以第 3 步的每一项都必须是"可选、后台、失败退回内置那份"。
 
-## 5. 还有一层"自动"是人这一步
+## 5. 上游那一刀：现在由 `auto-sync.yml` 每天量一次
 
-上游发新 tag → 检测到 → 开同步分支 → 跑游戏套件与 EXT-SURFACE 反查 → 出 payload。这一段现在全都还是手点
-（`cut-payload.yml` 是 `workflow_dispatch`）。把它改成 `schedule`/上游 tag 触发，"不想维护"才真正成立；
-但要留住一件事：**合并本身仍然要人看**。0.2.2 这一刀的实际过程是"合并 + 两处测试红 + 自检页两个自坏"，
-全自动合并会把这一步的返工直接推到玩家身上。
+上游发新 tag → 检测到 → 开同步分支 → 跑游戏套件与 EXT-SURFACE 反查 → 出 payload → 发布 Release。
+这一段以前全手点，`.github/workflows/auto-sync.yml` 接手了"检测 + 量代价"：
+
+| 模式 | 做什么 | 会推什么 |
+| --- | --- | --- |
+| `report`（默认，schedule 每天 UTC 18:37 跑的就是它） | 拉上游、找 master 上可达的最大版本 tag、算落后多少提交、做**严格**合并数冲突、把冲突与 `docs/EXT-SURFACE.json` 那 37 个挂载点求交集，写成报告产物 | 什么都不推 |
+| `branch` | 只在冲突数 = 0 时，把合并结果推到 `auto/upstream-sync-<tag>`（推完用 `ls-remote` 核 sha），给 `test-game-branch` / `cut-payload` 当输入 | 只推 `auto/` 分支，**绝不碰 `feat/skins`**（可能是别的会话正在用的那条） |
+
+为什么先"量"而不是直接自动合：2026-10-10 实测，上游 v0.2.2→v0.2.3 动了 **203 个文件**，其中 **18 个是我们压着
+挂载点的那 37 个文件之一**（`public/index.html`、`public/js/net.js`、`public/js/assets.js`、`public/js/main.js`、
+`public/js/render/units.js`、`public/js/render/app.js`、`public/js/screens/loadout.js`、`shared/protocol.js`、
+`data/assets.json`、i18n 两份 …）。也就是这一刀默认合并要在 18 个文件等人处理。地基是这样的时候开"自动出包 +
+自动发布"，自动化的是制造坏包。
+
+顺序因此定了：**先把 18/37 压到接近 0**（task #42：功能搬进 `ext/`，上游文件里每个功能只剩一行挂载点），
+**再**把 schedule 从"只量"升到"合干净就出包、出包就发 Release"。到那时"零冲突"这一档就真的没人参与了 ——
+lane 自己会推 `auto/` 分支、自己跑套件、自己出包。人要处理的只有"有冲突"那一档：0.2.2 那一刀的实际过程是
+"合并 + 两处测试红 + 自检页两个自坏"，这些正是闸门拦得住的东西，前提是闸门跑在真产物上而不是本地口头结论。
+
+报告里那几个数（落后提交数 / 上游改动文件数 / 冲突数 / 压着挂载点数）就是这条 lane 唯一的产出物，好坏趋势看得见；
+它不替人做决定，也不写"看起来没问题"这种没有出处的结论。
+
+## 6. 全自动那条链长什么样（每格都有闸门，缺一格就整条停）
+
+`auto-sync`（量）→ `test-game-branch`（游戏套件 + EXT-SURFACE 反查）→ `cut-payload`（切代码增量 + 清单，
+含离线全量与美术点名核对）→ `build-clients` / `build-tauri`（六个形态）→ `publish-client`（发 Release）。
+今天除第一条外全是 `workflow_dispatch`，接成 `workflow_run` 触发之前要认三件事：
+
+1. **发出去的名字就不能改**：已发布的 Release/资产是永久 URL，玩家手里的旧客户端还会按名字取增量。自动发布因此
+   只能用新 tag、新文件名，永不覆盖（`cut-payload` 和 `publish-client` 都已经先查 tag 存在就退出）。
+2. **发布是"最后一个绿"而不是"跑完了"**：`publish-client` 现在会在推完之后逐条 HEAD 自己发的 URL、
+   比对本地与远端 sha256，一条不多一条不少才算成功；`as_draft=yes` 时那条"匿名 200"要求会自动转成核对状态。
+3. **玩家数量是硬约束**：线上 300 多人在玩，所以自动出的包先进 canary 指针，stable 由"绿满 N 天且没人报障"或人往前挪
+   （task #76）。这条不改，"自动"就等于把一次坏合并直接推给全部在线玩家。
+
+

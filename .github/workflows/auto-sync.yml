@@ -1,0 +1,206 @@
+name: auto-sync
+
+# 让"上游又发新版了"从一件人盯的事，变成一条每天自己跑、并且**说实话**的流水线。
+#
+# 为什么要它：目标是"客户端跟着最上游自动更新、自动构建、自动发布 Release"。但"自动合并"今天能不能做，
+# 不是拍脑袋决定的 —— 2026-10-10 实测：上游 v0.2.3 动了 203 个文件，其中 **18 个是我们压着挂载点的那 37 个文件之一**
+# （net.js / assets.js / render/units.js / index.html / shared/protocol.js …）。也就是说默认合并会在 18 个文件上等
+# 待人处理，"自动发布"在这种地基上只会自动化地制造一次坏包。
+#
+# 所以这条 lane 的角色是**量**，不是替你决定：
+#   report 模式（默认，也是 schedule 跑的模式）：什么都不推，只算"这一刀合过来要冲突几个文件、其中几个压着我们的挂载点"，
+#           以及 EXT-SURFACE 那份清单是不是还跟得上。它每天给一次答案，趋势好坏看得见。
+#   branch 模式：合并干净（零冲突）时，把合并结果推到 `auto/upstream-sync-<tag>`（绝不碰 feat/skins —— 那条分支
+#           可能正被人/别的会话用），给后面的 test-game-branch 与 cut-payload 当输入。
+#   有冲突时 branch 模式也不硬合：把冲突文件列出来，然后停下。合并是人的决定，"自动化"不该把这个决定偷走。
+#
+# 真正的自动化路线（写进 docs/AUTO-UPDATE.md）：先把 18/37 这个数压到接近 0（task #42：功能搬进 ext/，
+# 上游文件里每个功能只剩一行挂载点），再开 schedule 出包 + 自动发布。顺序反了就是自动发坏包。
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'report=只量不推（默认）/ branch=合并干净时把结果推到 auto/ 分支'
+        required: false
+        default: 'report'
+        type: choice
+        options:
+          - 'report'
+          - 'branch'
+      game_repo:
+        description: '我们的 fork(owner/name)'
+        required: false
+        default: 'lilyco-42/Stronghold-Protocol'
+      upstream_repo:
+        description: '最上游(owner/name)'
+        required: false
+        default: 'sganggs/Stronghold-Protocol'
+      base_ref:
+        description: '从哪条分支出发做合并（只读，不会推回它）'
+        required: false
+        default: 'feat/skins'
+  schedule:
+    - cron: '37 18 * * *'   # 每天一次（UTC 18:37 ≈ 北京 02:37），错开整点
+
+# schedule 跑的时候 inputs 全是空字符串，直接用 inputs.repository 会让 checkout 拿到空值、
+# 每晚红一次却没人看。所有引用都走下面这份带默认值的 env。
+env:
+  GAME_REPO: ${{ inputs.game_repo || 'lilyco-42/Stronghold-Protocol' }}
+  UPSTREAM_REPO: ${{ inputs.upstream_repo || 'sganggs/Stronghold-Protocol' }}
+  BASE_REF: ${{ inputs.base_ref || 'feat/skins' }}
+  MODE: ${{ inputs.action || 'report' }}
+
+permissions:
+  contents: write   # 只有 branch 模式会推，而且只推 auto/ 分支；report 模式（schedule）一个对象都不写
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: checkout 我们的 fork（带全历史与 tag，合并要算 merge base）
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.GAME_REPO }}
+          ref: ${{ env.BASE_REF }}
+          path: game
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: 取最上游，找出最新的 release tag
+        id: up
+        working-directory: game
+        run: |
+          set -euo pipefail
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git" 2>/dev/null || true
+          git fetch -q --tags upstream
+          TIP=$(git rev-parse upstream/master)
+          # "最新 tag"取 upstream/master 上可达的最大版本 tag，而不是仓库里随便一个老 tag。
+          NEWEST=$(git describe --tags --abbrev=0 "$TIP" 2>/dev/null || echo '')
+          if [ -z "$NEWEST" ]; then
+            # 上游没打 tag 就只能拿 tip 当那一刀；这时候 up_to_date 用 tip 判，别让空字符串把 set -e 炸掉。
+            NEWEST="$TIP"
+            echo "（上游 master 上没有可达的 tag，改用 tip 当同步目标）"
+          fi
+          echo "tip=$TIP"
+          echo "newest=$NEWEST"
+          echo "tip=$TIP" >> "$GITHUB_OUTPUT"
+          echo "newest=$NEWEST" >> "$GITHUB_OUTPUT"
+          if git merge-base --is-ancestor "$NEWEST" HEAD 2>/dev/null; then
+            echo "up_to_date=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "up_to_date=no" >> "$GITHUB_OUTPUT"
+          fi
+          echo "落后 $(git rev-list --count HEAD..$TIP) 个提交 / 领先 $(git rev-list --count $TIP..HEAD) 个我们自己的提交"
+          git log --oneline -1 "$NEWEST" | sed 's/^/上游那一刀: /'
+
+      - name: 已经同步过就直接收工
+        if: steps.up.outputs.up_to_date == 'yes'
+        run: echo "✅ ${{ env.BASE_REF }} 已包含上游 ${{ steps.up.outputs.newest }} —— 这一跑无事可做，也没推任何东西。"
+
+      - name: 试一次合并，把代价量出来（不改任何东西）
+        if: steps.up.outputs.up_to_date == 'no'
+        id: try
+        working-directory: game
+        run: |
+          set -euo pipefail
+          git config user.name 'auto-sync (gate)'; git config user.email 'auto-sync@invalid'
+          NEW="${{ steps.up.outputs.newest }}"
+          BASE=$(git rev-parse HEAD)
+          # 必须用**严格**的 --no-commit 合并来量代价。这里不能用 `-X theirs`/`-X ours`：那种合并会替人把冲突"解决"掉，
+          # 而且 git merge 一旦成功就落了 commit，后面再合同一个 tag 只会得到 "Already up to date" → 冲突数永远是 0，
+          # 这条闸门就成了"自动发坏包"的绿灯。--no-commit 什么都不提交，merge --abort 能干净退回 BASE。
+          rc=0
+          git merge --no-edit --no-commit "$NEW" >/tmp/strict.out 2>&1 || rc=$?
+          CONFLICTS=$(git diff --name-only --diff-filter=U | grep -c . || true)
+          echo "--- 合并输出（末 15 行，rc=$rc）---"
+          tail -15 /tmp/strict.out 2>/dev/null || true
+          echo "冲突文件数 = $CONFLICTS"
+          git diff --name-only --diff-filter=U | sed 's/^/  U /' || true
+          git merge --abort 2>/dev/null || true
+          # 阳性对照：这一跑必须真的"试过合并"。rc=0 且没有 U 行 = 真能干净合；但万一 abort 没退回原样，
+          # 下面的挂载点对照量的就是合并后的树了 —— 那 18/37 这个数会凭空变小。所以直接核回去。
+          NOW=$(git rev-parse HEAD)
+          if [ "$NOW" != "$BASE" ]; then
+            echo "merge --abort 没退回原位（$BASE → $NOW），强制 reset 回 checkout 的那个 commit"
+            git reset --hard "$BASE"
+          fi
+          test -z "$(git status --porcelain)" || { echo "合并探针之后工作树不干净，后面的数字不作数"; exit 1; }
+          echo "conflicts=$CONFLICTS" >> "$GITHUB_OUTPUT"
+
+      - name: 与我们的挂载点清单对照
+        if: steps.up.outputs.up_to_date == 'no'
+        working-directory: game
+        env:
+          NEWEST: ${{ steps.up.outputs.newest }}
+          CONFLICTS: ${{ steps.try.outputs.conflicts }}
+          REPORT: ${{ runner.temp }}/auto-sync-report.md
+        run: |
+          set -euo pipefail
+          node - <<'NODE_EOF'
+          const { execFileSync } = require('child_process');
+          const fs = require('fs');
+          const g = (a) => execFileSync('git', a, { encoding: 'utf8' }).trim();
+          const doc = JSON.parse(fs.readFileSync('docs/EXT-SURFACE.json', 'utf8'));
+          const ours = Object.keys(doc.files);
+          const touched = new Set(g(['diff', '--name-only', 'HEAD..upstream/master']).split('\n').filter(Boolean));
+          const hit = ours.filter((f) => touched.has(f));
+          const behind = g(['rev-list', '--count', 'HEAD..upstream/master']);
+          const conflicts = process.env.CONFLICTS === '' ? '?' : process.env.CONFLICTS;
+          console.log(`上游这一刀共动 ${touched.size} 个文件；其中 ${hit.length}/${ours.length} 个是我们压了挂载点的上游文件：`);
+          console.log(hit.map((f) => `  · ${f}`).join('\n') || '  （没有）');
+          console.log(hit.length === 0
+            ? '结论：这一刀没碰我们的注入面 —— 自动合并+自动出包是可考虑的。'
+            : `结论：这一刀会需要人处理 ${hit.length} 个注入点。先把这个数压到 0 附近（task #42：功能搬进 ext/，上游文件里每功能只剩一行挂载点），再谈自动发布。`);
+          fs.writeFileSync(process.env.REPORT, [
+            '# auto-sync 报告',
+            '',
+            `- fork：${process.env.GITHUB_REPOSITORY} / 分支：${process.env.BASE_REF || ''}`,
+            `- 上游：${process.env.UPSTREAM_REPO}，最新 tag：${process.env.NEWEST}`,
+            `- 落后上游：${behind} 个提交`,
+            `- 严格合并（不替人解决冲突）的冲突文件数：**${conflicts}**`,
+            `- 上游改动文件总数：${touched.size}`,
+            `- 压着我们挂载点的上游文件：**${hit.length}/${ours.length}**`,
+            '',
+            hit.map((f) => `- ${f}`).join('\n'),
+            '',
+            hit.length === 0
+              ? '这一刀没碰注入面。'
+              : `这一刀要人处理 ${hit.length} 个注入点；把 ${hit.length}/${ours.length} 压到接近 0（task #42）之前，不要开自动出包+自动发布。`,
+            '',
+          ].join('\n'));
+          NODE_EOF
+          echo '--- 报告全文 ---'; cat "$REPORT"
+
+      - name: 合并干净时才推 auto/ 分支（report 模式不推）
+        if: steps.up.outputs.up_to_date == 'no' && env.MODE == 'branch' && steps.try.outputs.conflicts == '0'
+        working-directory: game
+        run: |
+          set -euo pipefail
+          # 走到这里 = 上游这一刀没有冲突。仍然只推到 auto/upstream-sync-<tag>：
+          # feat/skins 可能是别人正在用的分支，这条 lane 不往里面写任何东西。
+          NEW="${{ steps.up.outputs.newest }}"
+          BR="auto/upstream-sync-${NEW}"
+          if git ls-remote --exit-code --heads origin "$BR" >/dev/null 2>&1; then
+            echo "$BR 已存在（里面可能有人工修改）—— 不覆盖，停在这里等人看"
+            exit 1
+          fi
+          git merge --no-edit "$NEW"
+          git push origin "HEAD:refs/heads/$BR"
+          # 别只信 push 的退出码：核对远端真的有这个 ref、且 sha 对得上。
+          REMOTE=$(git ls-remote origin "refs/heads/$BR" | cut -f1)
+          LOCAL=$(git rev-parse HEAD)
+          echo "local =$LOCAL"
+          echo "remote=$REMOTE"
+          test "$REMOTE" = "$LOCAL" || { echo "推完在远端没看到 $BR（或 sha 不一致）"; exit 1; }
+          echo "✓ 推了 $BR —— 下一步：用 test-game-branch 跑它，再 cut-payload --game_ref $BR"
+
+      - name: 存档报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: auto-sync-report
+          path: ${{ runner.temp }}/auto-sync-report.md
+          if-no-files-found: warn
+          retention-days: 60

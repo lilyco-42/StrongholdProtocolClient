@@ -38,7 +38,7 @@ const TIMEOUT = 40;
 /**
  * Script what the network answers for one test.
  * @param {{open?: string[], flaky?: string[], cors?: Record<string, object>, answered?: string[], hang?: boolean,
- *          healthDelay?: number}} w
+ *          healthDelay?: number, socketDelay?: Record<string, number>, hangingSockets?: string[]}} w
  *   `open` socket URLs whose handshake succeeds, `flaky` ones that only succeed on a second attempt,
  *   `cors` health URLs that return JSON with CORS headers, `answered` health URLs reachable without CORS
  *   headers, `hang` = health requests never settle at all, `healthDelay` = how long /healthz takes (a real one is
@@ -50,6 +50,8 @@ function scriptWorld(w = {}) {
   const cors = w.cors ?? {};
   const answered = new Set(w.answered ?? []);
   const delay = w.healthDelay ?? 0;
+  const socketDelay = w.socketDelay ?? {};
+  const hangingSockets = new Set(w.hangingSockets ?? []);
   const tried = { sockets: [], health: [] };
   const hits = new Map();
   // Lazy on purpose: a rejected promise created up front would sit unhandled until the timer attaches its handler.
@@ -64,6 +66,7 @@ function scriptWorld(w = {}) {
       const n = (hits.get(url) ?? 0) + 1;
       hits.set(url, n);
       this.readyState = 0;
+      if (hangingSockets.has(url)) return;
       setTimeout(() => {
         const works = open.has(url) && !(flaky.has(url) && n < 2);
         if (works) {
@@ -73,7 +76,7 @@ function scriptWorld(w = {}) {
           this.readyState = 3;
           this.onclose?.({ code: 1006 });
         }
-      }, 1);
+      }, socketDelay[url] ?? 1);
     }
 
     close() { this.readyState = 3; }
@@ -168,6 +171,31 @@ describe('the server probe', { skip: GAME_ROOT ? false : 'no Stronghold-Protocol
     assert.equal(r.url, 'wss://host.example/ws', 'the game gets the socket URL that actually opened');
     assert.equal(r.hadPath, true);
     assert.deepEqual(tried.sockets.sort(), ['wss://host.example/play/ws', 'wss://host.example/ws'], 'both, in one round');
+  });
+
+  test('a working candidate returns before a slow losing mount times out', async () => {
+    const { tried } = scriptWorld({
+      open: ['wss://host.example/ws'],
+      hangingSockets: ['wss://host.example/play/ws'],
+    });
+    const started = Date.now();
+    const r = await picker.probe('https://host.example/play', 140);
+    assert.equal(r.ok, true);
+    assert.equal(r.url, 'wss://host.example/ws');
+    assert.ok(Date.now() - started < 100, 'working root WS should not wait for losing mount');
+    assert.equal(tried.sockets.length, 2);
+  });
+
+  test('a handshake timeout is inconclusive, not proof the host is offline', async () => {
+    scriptWorld({
+      hangingSockets: ['wss://host.example/ws'],
+      cors: { 'https://host.example/healthz': { app: '0.2.3' } },
+    });
+    const r = await picker.probe('https://host.example', 30, 1);
+    assert.equal(r.ok, false);
+    assert.equal(r.online, true);
+    assert.equal(r.timedOut, true);
+    assert.match(probeReason(r), /握手超时/);
   });
 
   test('a host that answers /healthz is reported as online even though /ws failed', async () => {

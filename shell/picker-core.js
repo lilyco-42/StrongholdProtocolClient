@@ -233,8 +233,10 @@ export function orderCandidates(first, ambiguous) {
  * @param {{ ok?: boolean, online?: boolean, hadPath?: boolean }} r a probe result
  * @returns {string} '' when it worked or nothing was learned, otherwise one clause for the card
  */
-export function probeReason({ ok, online, hadPath }) {
-  if (ok || !online) return '';
+export function probeReason({ ok, online, hadPath, timedOut }) {
+  if (ok) return '';
+  if (timedOut) return '本次握手超时，可能是网络波动；可以重试或直接连接';
+  if (!online) return '';
   return hadPath ? '对方在线，但 /ws 与该路径下的 /ws 都没通' : '对方在线，但 /ws 没通（多半没转发到游戏服务）';
 }
 

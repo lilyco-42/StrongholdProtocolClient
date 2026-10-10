@@ -297,29 +297,90 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// payload 在哪：`$SP_WWW`（测试与"素材放在安装目录外"的机器）→ 安装目录里的 `www` → exe 旁边 → 开发用的 checkout。
+/// payload 在哪，最好的一批排前面：`$SP_WWW`（测试与"素材放在安装目录外"的机器）→ **已应用的更新**
+/// `<userData>/payload/current` → 安装目录里的 `www` → exe 旁边 → 开发用的 checkout。
+///
+/// 这条顺序与 `desktop/payload-path.mjs` 是同一个约定的两份实现（`test/tauri-parity.test.js` 钉着它）：
+/// "这一跑用的是哪份 payload" 必须由两个壳给同一个答案，否则自动更新会出现"Tauri 新版、Electron 旧版"
+/// 这种在同一个人电脑上并存的事。判"合格"要两个文件（`index.html` + `build.json`）而不是"目录存在"：
+/// 解了一半的更新包正好有前者没后者，那种目录服务起来是白屏。不合格的一律跳过、继续往下找 —— 更新坏了
+/// 不能让玩家连内置那份都玩不了。
 fn locate_www() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    if let Ok(p) = std::env::var("SP_WWW") {
-        let pb = PathBuf::from(&p);
-        if pb.is_dir() {
-            return Ok(pb);
-        }
-    }
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
         .unwrap_or_else(|| PathBuf::from("."));
-    for c in [
-        exe_dir.join("www"),
-        exe_dir.join("resources").join("www"),
-        PathBuf::from("src-tauri/www"),
-        PathBuf::from("www"),
-    ] {
-        if c.join("index.html").is_file() {
-            return Ok(c);
+    let cands: [(&str, Option<PathBuf>); 6] = [
+        ("SP_WWW", std::env::var("SP_WWW").ok().map(PathBuf::from)),
+        ("已应用的更新", app_data_dir().map(|d| d.join("payload").join("current"))),
+        ("安装目录", Some(exe_dir.join("www"))),
+        ("安装目录(resources/www)", Some(exe_dir.join("resources").join("www"))),
+        ("开发 checkout", Some(PathBuf::from("src-tauri/www"))),
+        ("当前目录", Some(PathBuf::from("www"))),
+    ];
+    let (picked, skipped) = first_usable_payload(&cands);
+    let why = skipped.join(" | ");
+    if let Some(dir) = picked {
+        if !skipped.is_empty() {
+            eprintln!("[tauri] 跳过的候选：{why}");
+        }
+        return Ok(dir);
+    }
+    Err(format!(
+        "找不到 payload 目录 www/ —— 构建时必须把 payload 解到 src-tauri/www 并当资源打进包里。{}",
+        if why.is_empty() { String::new() } else { format!("（试过的都不合格：{why}）") }
+    )
+    .into())
+}
+
+/// 第一个合格的目录，外加"哪些候选因为什么被跳过"。跳过的一定要能说出来：玩家报"更新没生效"时，
+/// 这句就是答案（而不是"它默默用了内置那份"）。
+fn first_usable_payload(cands: &[(&str, Option<PathBuf>)]) -> (Option<PathBuf>, Vec<String>) {
+    let mut skipped: Vec<String> = Vec::new();
+    for (label, dir) in cands {
+        let Some(dir) = dir else { continue };
+        match payload_problem(dir) {
+            None => return (Some(dir.clone()), skipped),
+            Some(why) => skipped.push(format!("{label}（{}）：{why}", dir.display())),
         }
     }
-    Err("找不到 payload 目录 www/ —— 构建时必须把 payload 解到 src-tauri/www 并当资源打进包里".into())
+    (None, skipped)
+}
+
+/// 一份目录为什么不算 payload。`None` = 合格。
+fn payload_problem(dir: &std::path::Path) -> Option<String> {
+    if !dir.join("index.html").is_file() {
+        return Some("缺 index.html".into());
+    }
+    if !dir.join("build.json").is_file() {
+        return Some("缺 build.json（这个目录不是 payload 根，或解包解了一半）".into());
+    }
+    None
+}
+
+/// 壳自己的数据目录：Windows `%APPDATA%\<identifier>`，macOS `~/Library/Application Support/<identifier>`，
+/// Linux `$XDG_DATA_HOME` 或 `~/.local/share` 下面。`<identifier>` 必须与 `tauri.conf.json` 的 identifier
+/// 一致（Tauri 自己就是这么算的），否则写进去的更新下次启动就找不着了。
+const APP_DATA_NAME: &str = "top.lain42.strongholdprotocol.tauri";
+
+fn app_data_dir() -> Option<PathBuf> {
+    let root = if cfg!(windows) {
+        std::env::var_os("APPDATA").map(PathBuf::from)
+    } else if cfg!(target_os = "macos") {
+        home_dir().map(|h| h.join("Library/Application Support"))
+    } else {
+        std::env::var_os("XDG_DATA_HOME")
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| home_dir().map(|h| h.join(".local/share")))
+    }?;
+    Some(root.join(APP_DATA_NAME))
+}
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
 }
 
 /// 47821 已经被人占用了，而且占它的就是本游戏的页面？

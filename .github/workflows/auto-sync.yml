@@ -2,12 +2,13 @@ name: auto-sync
 
 # 让"上游又发新版了"从一件人盯的事，变成一条每天自己跑、并且**说实话**的流水线。
 #
-# 为什么要它：目标是"客户端跟着最上游自动更新、自动构建、自动发布 Release"。但"自动合并"今天能不能做，
-# 不是拍脑袋决定的 —— 2026-10-10 按共同祖先（v0.2.2）实测：上游 v0.2.3 动了 **203 个文件**，其中 **18 个是我们压着
-# 挂载点的那 37 个文件之一**；严格合并（不替人解决冲突）在 **2 个文件**上冲突（`data/assets.json`、
-# `public/css/screens/loadout.css`）。这两个数是不同的东西：冲突是要人点的文件，18 是"上游改了我们会挂进去的文件"，
-# 那里合并会安静地成功、但补丁/功能的上下文可能已经变了 —— 所以这条 lane 除了数冲突，还直接把
+# 为什么要它：目标是"客户端跟着最上游自动更新、自动构建、自动发布 Release"。但"自动合并"能不能开，
+# 不是拍脑袋决定的。第一次量（2026-10-10，上游 v0.2.3 那一刀，基线 = 共同祖先 v0.2.2）：上游动了 **203 个文件 / 36 个提交**，
+# 其中 **17 个落在我们记录的 36 个挂载点文件上**；严格合并（不替人解决冲突）在 **2 个文件**上冲突（`data/assets.json`、
+# `public/css/screens/loadout.css`）。这两个数是不同的东西：冲突是要人点的文件，17 是"上游改了我们会挂进去的文件"，
+# 那里合并会安静地成功、而我们的上下文可能已经变了 —— 所以这条 lane 除了数冲突，还直接把
 # `patches/game-client.patch` 在合并结果上试打一遍（tools/check-patch-applies.mjs）。
+# 那一刀已经合进 feat/skins（2cb8387e），所以这条 lane 现在报的是"落后 0"——它的价值在于下一次自动给这个答案。
 #
 # 所以这条 lane 的角色是**量**，不是替你决定：
 #   report 模式（默认，也是 schedule 跑的模式）：什么都不推，只算"这一刀合过来要冲突几个文件、其中几个压着我们的挂载点、
@@ -104,7 +105,7 @@ jobs:
           fi
           echo "落后 $(git rev-list --count HEAD..$TIP) 个提交 / 领先 $(git rev-list --count $TIP..HEAD) 个我们自己的提交"
           git log --oneline -1 "$NEWEST" | sed 's/^/上游那一刀: /'
-          # 后面"上游动了哪些文件"必须以此为基线。用 HEAD 当基线是错的：HEAD 里含我们自己那 587 处挂载改动，
+          # 后面"上游动了哪些文件"必须以此为基线。用 HEAD 当基线是错的：HEAD 里含我们自己那 586 行挂载改动（记在 36 个上游文件上），
           # `git diff HEAD..upstream/master` 会把我们的差异一起算进去 —— 实测那样会报"37/37 全压着挂载点"，
           # 而按 merge base 算是 203 个文件里 18 个。数字错了，结论就会跟着错。
           BASE=$(git merge-base HEAD "$TIP")
@@ -185,7 +186,7 @@ jobs:
           const ours = Object.keys(doc.files);
           const BASE = process.env.MERGE_BASE;
           if (!BASE) { console.error('没有 merge base，这一跑没有基线，数字都不作数'); process.exit(2); }
-          // 基线必须是共同祖先，不能是 HEAD：HEAD 里含我们自己的 587 处挂载改动，拿它当基线会把我们的差异
+          // 基线必须是共同祖先，不能是 HEAD：HEAD 里含我们自己的 586 行挂载改动（记在 36 个上游文件上），拿它当基线会把我们的差异
           // 也算成"上游动了"（实测那样报 37/37，按 merge base 是 203 个文件里 18 个）。
           const touched = new Set(g(['diff', '--name-only', `${BASE}..upstream/master`]).split('\n').filter(Boolean));
           const hit = ours.filter((f) => touched.has(f));

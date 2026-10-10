@@ -16,7 +16,9 @@ name: publish-client
 #   3) 逐个上传、逐个核对 sha256 与 size（一次性传六个大文件时被外层超时杀过，留下 tag 已写、assets=0 的半成品）；
 #   4) 发布后逐个 URL 真 HEAD 一遍：只查资产列表看不出某一条腿是 404（实测过一次）。
 #
-# 默认只建 Draft。核对过再 `--draft=false`（那一步才建 git tag，也才会触发 `on: push: tags: v*` 的矩阵）。
+# 默认只建 Draft。核对过再 `--draft=false`（那一步才建 git tag）。
+# build-clients 那条 `push: tags: v*` 老触发已经删掉了，原因写在那个文件里 —— 否则发布这一步会顺手再点一跑
+# 用默认（已 403 的）OSS 地址的构建，看着像"发了版还多验了一次"，其实验的是另一份东西。
 
 on:
   workflow_dispatch:
@@ -187,11 +189,14 @@ jobs:
           set -euo pipefail
           TAG="${{ inputs.tag }}"
           # 只看资产列表看不出某一条腿是 404：c2* 那次就有一条 URL 静默 404，列表里它照样在。
-          # 用 `gh api` 而不是 `gh release view --json assets --jq '.assets[].browser_download_url'`：
-          # 后者的 `assets` 字段表里根本没有 browser_download_url，jq 于是每行输出 `null`，
-          # curl 拿着 "null" 当 URL 退 3（实测 2026-10-09，红的正是这条核对本身）。
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" \
-            --jq '.assets[] | "\(.name)\t\(.browser_download_url)"' > /tmp/urls.tsv
+          # 取法要用 release id，不能用 `releases/tags/$TAG`：那个端点**看不见 Draft**（实测 2026-10-10，
+          # 资产已经全部传完、digest 也逐条对过了，这一步却自己 404 —— draft 模式下它必红，等于这条闸门
+          # 只在"直接发布"那一种用法下被跑过）。`gh release view` 两种模式都看得见，先拿它的 id。
+          REL_ID=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json databaseId --jq .databaseId)
+          test -n "$REL_ID" || { echo "拿不到 $TAG 的 release id"; exit 1; }
+          echo "release $REL_ID（draft 与否由下一步的取法决定）"
+          gh api "repos/$GITHUB_REPOSITORY/releases/$REL_ID/assets" \
+            --jq '.[] | "\(.name)\t\(.browser_download_url)"' > /tmp/urls.tsv
           total=$(wc -l < /tmp/urls.tsv)
           test "$total" -ge 6 || { echo "Release 里只有 $total 条资产，少于六个形态"; exit 1; }
           if [ "${{ inputs.as_draft }}" = 'yes' ]; then

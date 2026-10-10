@@ -27,9 +27,11 @@ on:
         description: '闸门：payload 内 build.json 的 game.app 必须等于此值；留空则要求等于本仓库 package.json 的 version'
         required: false
         default: ''
-  push:
-    tags:
-      - 'v*'
+  # 以前这里还有 `push: tags: v*`。删掉的原因是它会自己咬自己：`publish-client` 发布玩家版那一步会建 git tag
+  # （v0.2.3-c33 这种），tag 一出现就再触发一次全量构建 —— 而那次用的是这个输入的**默认值**，
+  # 也就是 dl.lain42.top 那个已经 403 的旧 OSS 地址。结果是"发一次版，多一跑错料的构建"，
+  # 产物还不能对应真正的 payload。出哪个 payload 必须说清楚，所以这条 lane 只接受显式派发。
+  # 出处与发布由 publish-client.yml 收口（它核对六个 URL 与每条资产的 sha256）。
 
 env:
   NODE_VERSION: '22'

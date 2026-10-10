@@ -26,10 +26,12 @@ import { toHttpUrl, toWsUrl } from '../net.js';
 import {
   BUILTIN_SERVERS, COMMUNITY_SERVERS, K_AUTOSTART, K_CHOSEN, K_LIST, K_SEED, K_SERVER, NAME_MAX, SEED_VERSION,
   addressError, ambiguousScheme, autostartOn, cleanName, customFrom, isAndroidUA, isFullscreenHotkey, isPickerHotkey, missingSeeds, orderCandidates,
-  pathOf, probeReason, rootWsUrl, serverName, shellFullscreenUrl, shouldShowPicker,
+  pathOf, probeReason, rootWsUrl, serverName, shellFullscreenUrl, shouldShowPicker, forEachLimited,
 } from './picker-core.js';
 
 const PROBE_TIMEOUT_MS = 4000;
+// Limit simultaneous host TLS/WebSocket handshakes when opening the server list.
+const MAX_SERVER_PROBES = 2;
 const isAndroid = () => isAndroidUA(globalThis.navigator?.userAgent);
 
 /**
@@ -314,6 +316,7 @@ function mount() {
   let list = [];
   let selected = null;
   const states = new Map();
+  let refreshEpoch = 0;
 
   /** The stored entry behind a key, when it is a user-added (editable) server. */
   const customEntryOf = (key) => customServers().find((e) => toWsUrl(e.address) === key) || null;
@@ -383,7 +386,7 @@ function mount() {
     for (const s of list) {
       const st = states.get(s.key) || {};
       const custom = customEntryOf(s.key) != null;
-      const state = st.pending ? '检测中…' : st.ok ? `可连接 · ${st.ms}ms` : st.failed ? '无法连接' : '';
+      const state = st.pending ? '检测中…' : st.ok ? `可连接 · 建连 ${st.ms}ms` : st.failed ? '无法连接' : '';
       // The reason goes on the address line, which wraps; the status column stays one short word.
       const reason = st.pending || st.ok ? '' : probeReason(st);
       const info = st.info
@@ -417,24 +420,38 @@ function mount() {
     if (editEl) editEl.disabled = form !== null || !customEntryOf(selected);
   }
 
-  function refresh(entry) {
-    states.set(entry.key, { pending: true });
+  /** Probe at most two servers simultaneously and discard obsolete scan results. */
+  function queueRefreshAll() {
+    const epoch = ++refreshEpoch;
+    states.clear();
+    const entries = [...list];
+    if (selected) entries.sort((a, b) => Number(b.key === selected) - Number(a.key === selected));
+    for (const entry of entries) states.set(entry.key, { pending: true });
     renderList();
-    probe(entry.address).then((r) => {
-      states.set(entry.key, { ok: r.ok, ms: r.ms, info: r.info, failed: !r.ok, url: r.url, online: r.online, hadPath: r.hadPath });
+    void forEachLimited(entries, MAX_SERVER_PROBES, async (entry) => {
+      if (epoch !== refreshEpoch) return;
+      let result;
+      try {
+        result = await probe(entry.address);
+      } catch {
+        result = { ok: false, ms: 0, online: false, hadPath: pathOf(entry.address) !== '' };
+      }
+      if (epoch !== refreshEpoch) return;
+      states.set(entry.key, {
+        ok: result.ok, ms: result.ms, info: result.info, failed: !result.ok,
+        url: result.url, online: result.online, hadPath: result.hadPath,
+      });
       renderList();
-      if (!r.ok && entry.key === selected) {
-        setHint(`连不上 ${entry.http}${r.online ? '：对方在线，但没有游戏服务在 /ws 等待连接（可能已停机或没转发到游戏端口）。' : '：地址、端口或网络不通。'}确认服务器已启动，或换一个地址。`);
+      if (!result.ok && entry.key === selected) {
+        setHint(`连不上 ${entry.http}${result.online ? '：对方在线，但没有游戏服务在 /ws 等待连接（可能已停机或没转发到游戏端口）。' : '：地址、端口或网络不通。'}确认服务器已启动，或换一个地址。`);
       }
     });
   }
 
-  /** 刷新: re-probe every listed server (the rows show 检测中… until each answers). */
+  /** Refresh without flooding all discovered servers with simultaneous sockets. */
   function refreshAll() {
-    setHint('正在重新测试各服务器延迟…');
-    states.clear();
-    renderList();
-    for (const s of list) refresh(s);
+    setHint('正在重新检测连接建立耗时（不是游戏内 RTT）…');
+    queueRefreshAll();
   }
 
   function loadList(keepKey) {
@@ -446,7 +463,7 @@ function mount() {
     if (!list.some((s) => s.key === selected)) selected = list[0]?.key ?? null;
     states.clear();
     renderList();
-    for (const s of list) refresh(s);
+    queueRefreshAll();
   }
 
   /**

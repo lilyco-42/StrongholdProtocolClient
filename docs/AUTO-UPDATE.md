@@ -37,7 +37,7 @@ payload 里 99% 的字节是美术：一条 `assets/` 就 13,342 个文件、约
 
 ## 3. 壳侧的落地顺序（还没做完，按这个顺序做）
 
-1. ✅ **payload 位置能被换（已做）** —— Tauri 侧已经有 `locate_www()`：`$SP_WWW` → 安装目录 `www/` → exe 旁边 → 开发 checkout。
+1. ✅ **payload 位置能被换（已做，run 38024617803：cargo test + 那条一致性闸门都过）** —— Tauri 侧已经有 `locate_www()`：`$SP_WWW` → 安装目录 `www/` → exe 旁边 → 开发 checkout。
    Electron 侧是写死的 `process.resourcesPath/www`（`desktop/main.mjs:32`），要补成同一条链 + `<userData>/payload/current`。
    这一步不改任何行为，只是让"外面那份"能被选中。
 2. **解析与切换**：`<userData>/payload/<cut>/` 解包，成功后原子地把 `current` 指针换过去；失败留在上一份。
@@ -48,6 +48,7 @@ payload 里 99% 的字节是美术：一条 `assets/` 就 13,342 个文件、约
    两条规则由 `test/tauri-parity.test.js` 钉住：`$SP_WWW` → 已应用的更新 → 内置 → 开发 checkout 的次序，
    以及"合格 = 有 `index.html` **和** `build.json`"。Electron 每次启动把选中的来源与被跳过的原因写进
    `<userData>/client.log`，所以"我更新了没生效"有地方可查。
+   已发布的 `v0.2.2-c32` 里那批壳**不含**这条链（它比这条改动早）—— 不回头覆盖它，改动随下一刀出。
    两边的 userData 不是同一个目录（Electron 按产品名，Tauri 按 identifier），也就是各管各的更新 —— 目前不共享，
    共享要先把落点从各家的数据目录里搬出来，那是另一笔账。
 3. **取清单与下载**：读 `https://github.com/.../releases/…`（公开仓，匿名可读）。超时/失败静默，不挡启动、不弹全屏错误。

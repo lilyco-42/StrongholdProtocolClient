@@ -15,7 +15,7 @@ npm run client:build        # 只生成 build/client/www（想用自己的静态
 npm test                    # 打包流程的单元/契约测试（无游戏 checkout 时相关用例自动跳过）
 ```
 
-详细说明（Android SDK 准备、签名、**服务器公告**、排错、**部署与重启**、**查服务器忙不忙**）见 **[docs/PACKAGING.md](docs/PACKAGING.md)**；服务器上的发版自动化（钩子/定时器脚本 `deploy/`）见 **[docs/DEPLOY-SERVER.md](docs/DEPLOY-SERVER.md)**；iPhone 上「只显示头像、没有立绘」这类报告的查法与已排除项见 **[docs/IOS-ART.md](docs/IOS-ART.md)**。
+详细说明（Android SDK 准备、签名、**服务器公告**、排错、**部署与重启**、**查服务器忙不忙**）见 **[docs/PACKAGING.md](docs/PACKAGING.md)**；服务器上的发版自动化（钩子/定时器脚本 `deploy/`）见 **[docs/DEPLOY-SERVER.md](docs/DEPLOY-SERVER.md)**；iPhone 上「只显示头像、没有立绘」这类报告的查法与已排除项见 **[docs/IOS-ART.md](docs/IOS-ART.md)**。 客户端为什么能只下几个 MB 就升级、以及它在三个平台上各自能做到什么，见 **[docs/AUTO-UPDATE.md](docs/AUTO-UPDATE.md)**。
 
 ## 玩家上手（不用会编译，只要装和玩）
 

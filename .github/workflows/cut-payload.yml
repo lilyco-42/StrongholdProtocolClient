@@ -188,11 +188,64 @@ jobs:
           grep -q 'sp-selftest' "$OUT/js/shell/picker.js" || { echo "picker.js 里没有自检页入口"; exit 1; }
           echo "闸门通过:$(find "$OUT" -type f | wc -l) 个文件,$(du -sh "$OUT" | cut -f1)"
 
+      - name: 拆成「美术 + 代码」两半，并证明拆开再合回去是逐字节同一份
+        env:
+          BASE: ${{ inputs.base_payload_release }}
+          TAG: ${{ inputs.out_tag }}
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/www"
+          # 为什么要这一刀：玩家每次升级真正变的只有代码，而包里 99% 的字节是美术（assets/ 一条目录就占
+          # 13,342 个文件 / 约 800 MB）。自动更新只能搬"每次真的会换"的那部分，所以按一条明确的分界拆：
+          # 美术 = ./assets（这条 lane 从上一版 payload 原样拷进来的那批）；其余全部进代码包（含 vendor/，
+          # 上游换 pixi 版本时它必须能随增量一起走）。
+          # 分界写在这里一次，客户端与这条闸门共用同一个约定，见 docs/AUTO-UPDATE.md。
+          NAMEVER="${TAG#payload-}"
+          CODE="sp-client-code-${NAMEVER}.tar.gz"
+          MANIFEST="sp-client-manifest-${NAMEVER}.json"
+          tar -czf "$RUNNER_TEMP/$CODE" -C "$OUT" --exclude=./assets .
+          CODE_FILES=$(tar -tzf "$RUNNER_TEMP/$CODE" | grep -vc '/$' || true)
+          ALL_FILES=$(find "$OUT" -type f | wc -l)
+          ART_FILES=$(find "$OUT/assets" -type f | wc -l)
+          echo "代码包 $CODE：$CODE_FILES 个文件 / $(du -h "$RUNNER_TEMP/$CODE" | cut -f1)；payload 共 $ALL_FILES 个，其中美术 $ART_FILES 个"
+          # 拆分的阳性对照：把代码包解出来 + 原样放回美术，必须与 payload 逐字节相同。这条不成立就说明分界写错了
+          # （漏了文件或排多了），那种增量发出去就是"有人更新后白屏"。
+          rm -rf "$RUNNER_TEMP/verify" && mkdir -p "$RUNNER_TEMP/verify"
+          tar -xzf "$RUNNER_TEMP/$CODE" -C "$RUNNER_TEMP/verify"
+          cp -a "$OUT/assets" "$RUNNER_TEMP/verify/assets"
+          diff -r "$OUT" "$RUNNER_TEMP/verify"
+          echo "✓ 代码包 + 美术 = 原 payload（逐字节一致）"
+          # 拆分的阴性对照：代码包如果其实什么都没拆出去，上面那条 diff 会**永远成立**、绿灯毫无意义。
+          # 所以要求它确实少掉了美术那一档数量级。
+          test "$CODE_FILES" -lt $((ALL_FILES / 4)) || { echo "代码包只比 payload 少一点（$CODE_FILES vs $ALL_FILES）—— 分界没生效"; exit 1; }
+          # 美术那一半用"名字+内容"的指纹当增量前提：客户端手里的 artDigest 对得上才允许只换代码。
+          ART_DIGEST=$(cd "$OUT" && find assets -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)
+          CODE_SHA=$(sha256sum "$RUNNER_TEMP/$CODE" | cut -d' ' -f1)
+          ART_SIZE=$(du -sb "$OUT/assets" | cut -f1)
+          # 清单用 printf 而不是 `node -`（从 stdin 读脚本）：那种写法在这个仓库里没验证过，而 `node -p`
+          # 在上面几步已经真跑通。清单本来就是一层薄数据，不需要脚本能力。
+          BJ="$OUT/build.json"
+          APP=$(node -p "JSON.parse(require('fs').readFileSync('$BJ','utf8')).game.app")
+          SERVER=$(node -p "JSON.parse(require('fs').readFileSync('$BJ','utf8')).server")
+          COMMIT=$(node -p "JSON.parse(require('fs').readFileSync('$BJ','utf8')).game.commit")
+          DESCRIBE=$(node -p "JSON.parse(require('fs').readFileSync('$BJ','utf8')).game.describe")
+          CODE_BYTES=$(stat -c %s "$RUNNER_TEMP/$CODE")
+          printf '{\n  "schema": 1,\n  "cut": "%s",\n  "version": "%s",\n  "game": { "app": "%s", "commit": "%s", "describe": "%s" },\n  "server": "%s",\n  "code": { "file": "%s", "sha256": "sha256:%s", "files": %s, "bytes": %s },\n  "art": { "digest": "sha256:%s", "files": %s, "bytes": %s },\n  "artFrom": "%s",\n  "minShell": 1,\n  "builtAt": "%s"\n}\n' \
+            "$TAG" "$APP" "$APP" "$COMMIT" "$DESCRIBE" "$SERVER" "$CODE" "$CODE_SHA" "$CODE_FILES" "$CODE_BYTES" \
+            "$ART_DIGEST" "$ART_FILES" "$ART_SIZE" "$BASE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$RUNNER_TEMP/$MANIFEST"
+          # 自己产的文件自己先验：JSON 少个引号在"打印出来看看"里很容易看不出来，到客户端才炸。
+          node -p "JSON.stringify(JSON.parse(require('fs').readFileSync('$RUNNER_TEMP/$MANIFEST','utf8')).code)"
+          cat "$RUNNER_TEMP/$MANIFEST"
+          echo "ART_DIGEST=sha256:$ART_DIGEST  CODE_SHA=sha256:$CODE_SHA  CODE_FILES=$CODE_FILES  ART_FILES=$ART_FILES  ART_SIZE=$ART_SIZE"
+          echo "CODE=$CODE MANIFEST=$MANIFEST" >> "$GITHUB_ENV"
+
       - name: 存档 build.json 与清单
         uses: actions/upload-artifact@v4
         with:
           name: payload-build-${{ inputs.out_tag }}
-          path: ${{ runner.temp }}/www/build.json
+          path: |
+            ${{ runner.temp }}/www/build.json
+            ${{ runner.temp }}/sp-client-manifest-*.json
           if-no-files-found: warn
           retention-days: 30
 
@@ -209,6 +262,8 @@ jobs:
           if [ "$PUBLISH" = 'no' ]; then
             echo "publish=no —— 不建 Release。上面是闸门结果与 build.json,包本身留在 runner 上。"
             cat "$OUT/build.json"
+            ls -l "$RUNNER_TEMP"/sp-client-code-*.tar.gz "$RUNNER_TEMP"/sp-client-manifest-*.json
+            cat "$RUNNER_TEMP"/sp-client-manifest-*.json
             exit 0
           fi
           # 沿用上一版 tar 的内部结构:解包方式是 `tar -xzf … -C dir`,所以根就是 payload 目录本身。
@@ -231,5 +286,9 @@ jobs:
           CLIENT_SHA=$(git rev-parse HEAD)
           NOTES="游戏 $GAME_SHA（${{ inputs.game_repo }}@${{ inputs.game_ref }}），素材来自 ${{ inputs.base_payload_release }}，server=${{ inputs.server }}。由 cut-payload.yml 在 runner 上打出（客户端提交 $CLIENT_SHA）。"
           gh release create "$TAG" "$RUNNER_TEMP/$ASSET" --target "$CLIENT_SHA" --title "payload $(cat /tmp/appver) (${{ inputs.out_tag }})" --notes "$NOTES" $DRAFT
+          # 三个资产一起给：整包（装机/发版用）、代码增量（自动更新搬的就是它，几个 MB 而不是 600 MB）、
+          # 清单（客户端读的那一份：code.sha256 + art.digest + minShell）。仍然一个一个传，理由同 c28 那次。
+          gh release upload "$TAG" "$RUNNER_TEMP/sp-client-code-${TAG#payload-}.tar.gz" -R lilyco-42/StrongholdProtocolClient
+          gh release upload "$TAG" "$RUNNER_TEMP/sp-client-manifest-${TAG#payload-}.json" -R lilyco-42/StrongholdProtocolClient
           gh release view "$TAG" -R lilyco-42/StrongholdProtocolClient --json tagName,isDraft,assets \
             --jq '{tagName,isDraft,assets:[.assets[]|{name,size,digest}]}'

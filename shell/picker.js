@@ -29,7 +29,8 @@ import {
   pathOf, probeReason, rootWsUrl, serverName, shellFullscreenUrl, shouldShowPicker, forEachLimited,
 } from './picker-core.js';
 
-const PROBE_TIMEOUT_MS = 4000;
+// Cross-region mobile TLS handshakes sometimes need more than four seconds.
+const PROBE_TIMEOUT_MS = 6500;
 // Limit simultaneous host TLS/WebSocket handshakes when opening the server list.
 const MAX_SERVER_PROBES = 2;
 const isAndroid = () => isAndroidUA(globalThis.navigator?.userAgent);
@@ -157,6 +158,8 @@ function probeOnce(wsUrl, timeoutMs) {
     let socket = null;
     let timer = null;
     let opened = false;
+    let handshakeFailed = false;
+    let timedOut = false;
     let settled = false;
     let healthDone = false;
     let failWait = false;
@@ -168,15 +171,15 @@ function probeOnce(wsUrl, timeoutMs) {
       settled = true;
       if (timer) clearTimeout(timer);
       try { socket?.close(); } catch { /* already closed */ }
-      resolve({ ok: opened, ms: Date.now() - started, info, online });
+      resolve({ ok: opened, ms: Date.now() - started, info, online, timedOut });
     };
 
     // A failed socket is only reported once /healthz has had its say: an instant 403/503 handshake would otherwise
     // always beat the fetch, and '对方在线，但 /ws 没通' is the part the player can act on.
-    const fail = () => { if (healthDone) finish(); else failWait = true; };
+    const fail = () => { handshakeFailed = true; if (healthDone) finish(); else failWait = true; };
     const healthSettled = () => { healthDone = true; if (failWait) finish(); };
 
-    timer = setTimeout(finish, timeoutMs);
+    timer = setTimeout(() => { timedOut = !opened && !handshakeFailed; finish(); }, timeoutMs);
 
     const health = `${httpUrlOf(wsUrl)}/healthz`;
     // Best effort, never blocking: /healthz usually has no CORS headers, and that is the server's business.
@@ -220,15 +223,34 @@ export async function probe(address, timeoutMs = PROBE_TIMEOUT_MS, attempts = 2)
   const candidates = candidateWsUrls(address);
   const hadPath = pathOf(address) !== '';
   if (!candidates.length) return { ok: false, ms: 0, online: false, hadPath };
-  const raced = await Promise.all(candidates.map(async (url) => ({ ...(await probeOnce(url, timeoutMs)), url })));
-  const good = raced.find((r) => r.ok);
+  // A single successful WebSocket proves reachability. Do not wait for a
+  // dead alternative mount to time out before reporting success.
+  const raced = new Array(candidates.length);
+  let remaining = candidates.length;
+  const good = await new Promise((resolve) => {
+    candidates.forEach((url, i) => {
+      void probeOnce(url, timeoutMs).then((r) => {
+        raced[i] = { ...r, url };
+        if (r.ok) resolve(raced[i]);
+        else if (--remaining === 0) resolve(null);
+      });
+    });
+  });
   if (good) return { ...good, hadPath };
+  const failed = raced.filter(Boolean);
   if (attempts > 1) {
     const again = { ...(await probeOnce(candidates[0], timeoutMs)), url: candidates[0] };
     if (again.ok) return { ...again, hadPath };
-    return { ok: false, ms: again.ms, info: again.info ?? raced.find((r) => r.info)?.info, online: again.online || raced.some((r) => r.online), hadPath };
+    return {
+      ok: false, ms: again.ms, info: again.info ?? failed.find((r) => r.info)?.info,
+      online: again.online || failed.some((r) => r.online), timedOut: again.timedOut || failed.some((r) => r.timedOut),
+      hadPath,
+    };
   }
-  return { ok: false, ms: Math.max(0, ...raced.map((r) => r.ms)), info: raced.find((r) => r.info)?.info, online: raced.some((r) => r.online), hadPath };
+  return {
+    ok: false, ms: Math.max(0, ...failed.map((r) => r.ms)), info: failed.find((r) => r.info)?.info,
+    online: failed.some((r) => r.online), timedOut: failed.some((r) => r.timedOut), hadPath,
+  };
 }
 
 const CSS = `
@@ -386,7 +408,8 @@ function mount() {
     for (const s of list) {
       const st = states.get(s.key) || {};
       const custom = customEntryOf(s.key) != null;
-      const state = st.pending ? '检测中…' : st.ok ? `可连接 · 建连 ${st.ms}ms` : st.failed ? '无法连接' : '';
+      const state = st.pending ? '检测中…' : st.ok ? `可连接 · 建连 ${st.ms}ms`
+        : st.failed ? (st.timedOut ? '探测超时 · 可重试' : st.online ? '主机在线 · WS 未通' : '暂时无法连接') : '';
       // The reason goes on the address line, which wraps; the status column stays one short word.
       const reason = st.pending || st.ok ? '' : probeReason(st);
       const info = st.info
@@ -439,11 +462,11 @@ function mount() {
       if (epoch !== refreshEpoch) return;
       states.set(entry.key, {
         ok: result.ok, ms: result.ms, info: result.info, failed: !result.ok,
-        url: result.url, online: result.online, hadPath: result.hadPath,
+        url: result.url, online: result.online, timedOut: result.timedOut, hadPath: result.hadPath,
       });
       renderList();
       if (!result.ok && entry.key === selected) {
-        setHint(`连不上 ${entry.http}${result.online ? '：对方在线，但没有游戏服务在 /ws 等待连接（可能已停机或没转发到游戏端口）。' : '：地址、端口或网络不通。'}确认服务器已启动，或换一个地址。`);
+        setHint(`检测 ${entry.http} 未成功：${probeReason(result) || '本次连接尝试失败'}。可稍后刷新，或直接尝试进入。`);
       }
     });
   }
@@ -476,12 +499,13 @@ function mount() {
     // Prefer the URL that actually answered the probe: a typed `host:port` may only be reachable on one scheme.
     const st = entry.key ? states.get(entry.key) : null;
     let address = (st?.ok && st.url) ? st.url : bootUrlOf(entry.address);
-    if (!st) {
-      // Direct connect: nothing has probed this address yet, so find the socket URL that works before going in.
+    if (!st?.ok) {
+      // Failed rows can be transient. Reprobe on join to detect the truly
+      // working WS scheme/mount instead of blindly using the guessed one.
       setHint(`正在连接 ${toHttpUrl(entry.address)} …`);
       const r = await probe(entry.address);
       if (r.ok && r.url) address = r.url;
-      else setHint(`连不上 ${toHttpUrl(entry.address)}：${probeReason(r) || '地址、端口或网络不通'}。仍然尝试进入，请稍候…`);
+      else setHint(`连不上 ${toHttpUrl(entry.address)}：${probeReason(r) || '本次连接尝试失败'}。仍然尝试进入，请稍候…`);
     }
     const key = keyOf(address);
     if (!key) return;

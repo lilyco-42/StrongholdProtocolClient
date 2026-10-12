@@ -133,9 +133,14 @@ export function describeStatus(f) {
   if (f.configError) return { ...base, state: 'error', message: `联机组件配置有误：${f.configError}`, hint: '请重新安装客户端，或向服主反馈。' };
   if (!f.config) return { ...base, state: 'disabled', message: '这个客户端没有内置联机组件。', hint: '从官网下载桌面版即可一键联机。' };
   if (f.error) {
-    const hint = /EPERM|EACCES|access is denied|requires elevation|需要提升/i.test(f.error)
-      ? 'Windows 需要管理员权限才能创建虚拟网卡：右键客户端图标 →「以管理员身份运行」。'
-      : '可以重试；不影响直接连官方服。';
+    // On Windows a missing TUN adapter does NOT make `spawn` fail: easytier-core starts, cannot create the
+    // adapter and exits within a second or two. So "it died right after starting" is the signal that actually
+    // fires, and elevation is by far the most common cause of it.
+    const hint = f.diedEarly
+      ? '最常见的原因是 Windows 需要管理员权限才能创建虚拟网卡：关掉客户端，右键图标 →「以管理员身份运行」。'
+      : /EPERM|EACCES|access is denied|requires elevation|需要提升/i.test(f.error)
+        ? 'Windows 需要管理员权限才能创建虚拟网卡：右键客户端图标 →「以管理员身份运行」。'
+        : '可以重试；不影响直接连官方服。';
     return { ...base, state: 'error', message: `联机启动失败：${f.error}`, hint };
   }
   if (f.child && f.reachable === true) {
@@ -182,7 +187,7 @@ export function createLanManager({
   logger = console,
   probeTimeoutMs = 1200,
 } = {}) {
-  const state = { config: null, configError: '', corePath: '', child: null, startedAt: null, lastError: null, reachable: null, configSource: '' };
+  const state = { config: null, configError: '', corePath: '', child: null, startedAt: null, lastError: null, diedEarly: false, reachable: null, configSource: '', tail: '' };
 
   function locate() {
     for (const { dir, source } of candidates) {
@@ -237,11 +242,20 @@ export function createLanManager({
     return state.reachable;
   }
 
+  /** Keep the tail of stderr: when the sidecar dies on startup, its own last words are the only real clue. */
+  function remember(text) {
+    const clean = redact(text, state.config?.networkSecret).trim();
+    if (!clean) return;
+    state.tail = `${state.tail}\n${clean}`.slice(-600);
+  }
+
   async function start() {
     if (!state.config) load();
     if (!state.config) return status();
     if (state.child) return status();
     state.lastError = null;
+    state.diedEarly = false;
+    state.tail = '';
     let configPath;
     try {
       configPath = await writeToml();
@@ -254,13 +268,18 @@ export function createLanManager({
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
       });
-      child.stdout?.on('data', (b) => logger.log?.('[lan]', redact(b.toString(), state.config.networkSecret).trim()));
-      child.stderr?.on('data', (b) => logger.warn?.('[lan]', redact(b.toString(), state.config.networkSecret).trim()));
+      child.stdout?.on('data', (b) => { remember(b.toString()); logger.log?.('[lan]', redact(b.toString(), state.config.networkSecret).trim()); });
+      child.stderr?.on('data', (b) => { remember(b.toString()); logger.warn?.('[lan]', redact(b.toString(), state.config.networkSecret).trim()); });
       child.on('error', (e) => { state.lastError = e.code === 'EPERM' ? 'EPERM: 需要管理员权限' : e.message; state.child = null; });
       child.on('exit', (code, signal) => {
         if (state.child === child) {
+          const lived = now() - (state.startedAt ?? now());
           state.child = null;
-          if (code && code !== 0) state.lastError = `easytier-core 退出，代码 ${code}${signal ? ` (${signal})` : ''}`;
+          if (code && code !== 0) {
+            // A TUN adapter that cannot be created kills the sidecar in about a second; see describeStatus.
+            state.diedEarly = lived < 8000;
+            state.lastError = `easytier-core 退出，代码 ${code}${signal ? ` (${signal})` : ''}${state.tail ? `：${state.tail.split('\n').filter(Boolean).pop()}` : ''}`;
+          }
         }
       });
       state.child = child;
@@ -295,6 +314,7 @@ export function createLanManager({
         child: Boolean(state.child),
         reachable: state.reachable,
         error: state.lastError,
+        diedEarly: state.diedEarly,
         pid: state.child?.pid ?? null,
         since: state.startedAt,
       }),

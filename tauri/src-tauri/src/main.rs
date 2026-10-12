@@ -15,6 +15,7 @@
 // `cargo tauri dev` 的日志还要看得见；release 下日志改由 `die()` 弹原生框（见那里）。
 #![cfg_attr(all(not(debug_assertions), not(test)), windows_subsystem = "windows")]
 
+mod lan;
 mod server;
 
 use server::{ServeStats, ShellCommand};
@@ -214,7 +215,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let stats = Arc::new(ServeStats::default());
     let shell = ShellSlot::new();
-    let (port, _thread) = server::spawn_server_with(www.clone(), Arc::clone(&stats), Some(Arc::new(shell.clone())))?;
+
+    // 虚拟局域网 sidecar（lan.rs）。**刻意不在这里启动**：Windows 上建 TUN 网卡要管理员权限，
+    // 所以由玩家在选服页点「开启联机」时再拉起来。没打进 sidecar 的构建会报 `disabled`，其余功能照旧。
+    let lan = Arc::new(lan::LanManager::new(
+        lan::candidates(&exe_dir()),
+        app_data_dir().unwrap_or_else(std::env::temp_dir),
+    ));
+    println!("[tauri] 联机 sidecar: {}", lan.brief());
+
+    let (port, _thread) = server::spawn_server_with(
+        www.clone(),
+        Arc::clone(&stats),
+        Some(Arc::new(shell.clone())),
+        Some(Arc::clone(&lan)),
+    )?;
     // 端口挪走了就等于换了 origin，而 localStorage 是按 origin 存的：这件事必须说出来，不能让玩家自己发现"存档没了"。
     if port != server::DEFAULT_PORT {
         eprintln!("[tauri] 端口 {} 被占，改用 {port}", server::DEFAULT_PORT);
@@ -297,6 +312,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// exe 所在的目录。payload 与联机 sidecar 都按它来找（两处必须用同一个答案，否则会出现
+/// "素材从 A 处来、组件从 B 处来"这种只在个别安装形态下才复现的怪事）。
+fn exe_dir() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
 /// payload 在哪，最好的一批排前面：`$SP_WWW`（测试与"素材放在安装目录外"的机器）→ **已应用的更新**
 /// `<userData>/payload/current` → 安装目录里的 `www` → exe 旁边 → 开发用的 checkout。
 ///
@@ -306,10 +330,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 /// 解了一半的更新包正好有前者没后者，那种目录服务起来是白屏。不合格的一律跳过、继续往下找 —— 更新坏了
 /// 不能让玩家连内置那份都玩不了。
 fn locate_www() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-        .unwrap_or_else(|| PathBuf::from("."));
+    let exe_dir = exe_dir();
     let cands: [(&str, Option<PathBuf>); 6] = [
         ("SP_WWW", std::env::var("SP_WWW").ok().map(PathBuf::from)),
         ("已应用的更新", app_data_dir().map(|d| d.join("payload").join("current"))),

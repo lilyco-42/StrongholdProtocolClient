@@ -101,7 +101,9 @@ test('cache policy agrees on the shapes that actually occur in the payload', () 
 
 test('the Tauri bundle really ships the payload as resources (not a placeholder page)', () => {
   const conf = JSON.parse(fs.readFileSync(path.join(ROOT, 'tauri', 'src-tauri', 'tauri.conf.json'), 'utf8'));
-  assert.deepEqual(conf.bundle.resources, ['www'], 'www 必须打进包里，壳才有离线素材');
+  // 第二个 resource 是虚拟局域网 sidecar（easytier-core + lan-config.json）。它跟 www 一样必须进 resources/，
+  // 因为 lan.rs 只从 exe 旁边找它；缺了不会崩，只是 /lan/status 恒 disabled、选服页不显示联机卡片。
+  assert.deepEqual(conf.bundle.resources, ['www', 'lan'], 'www 与 lan 都必须打进包里');
   assert.equal(conf.app.security.csp, null, '外部 http origin 上的页面不该被 Tauri 注入 CSP');
   assert.equal(conf.bundle.windows.webviewInstallMode.type, 'downloadBootstrapper',
     '离线安装器会把 ~130 MB 的 WebView2 塞进包里，与"减小体积"这条初衷相反；已装 WebView2 的机器根本不会下载');
@@ -303,4 +305,71 @@ test('both shells resolve the payload directory by the same rules', () => {
   const idm = /const APP_DATA_NAME: &str = "([^"]+)";/.exec(main);
   assert.ok(idm, 'Rust 里要有 APP_DATA_NAME 这个常量');
   assert.equal(idm[1], conf.identifier, 'APP_DATA_NAME 与 tauri.conf.json 的 identifier 不一致');
+});
+
+// 虚拟局域网（联机）这条路也是两个壳各写一份：Electron 那份在 desktop/lan.mjs，Tauri 那份在 lan.rs。
+// 漂移的症状特别难查 —— 玩家点了「开启联机」，页面拿到一个字段名对不上的 JSON，于是**卡片永远是"正在开启"**，
+// 而两个壳的日志都干干净净。所以这里比的是契约本身：前缀、路由、状态词表、JSON 字段名。
+test('both shells speak the same /lan contract', () => {
+  const js = fs.readFileSync(path.join(ROOT, 'desktop', 'lan.mjs'), 'utf8');
+  const jsRooms = fs.readFileSync(path.join(ROOT, 'shell', 'lanRooms.js'), 'utf8');
+  const rs = fs.readFileSync(path.join(ROOT, 'tauri', 'src-tauri', 'src', 'lan.rs'), 'utf8');
+
+  // 1) 前缀。两个壳都必须只认 /lan/，多一个字符页面就找不到它。
+  assert.match(js, /export const LAN_ROUTE_PREFIX = '\/lan\/';/);
+  assert.match(rs, /pub const LAN_PREFIX: &str = "\/lan\/";/);
+
+  // 2) 页面认的是这四个路径（shell/lanRooms.js 是唯一的真源）。
+  for (const route of ['status', 'rooms', 'up', 'down']) {
+    assert.ok(jsRooms.includes(`/lan/${route}`), `shell/lanRooms.js 少了 /lan/${route}`);
+  }
+  // 3) 三个壳侧路由两边都要有；`rooms` **只有 Electron 有** —— Tauri 刻意不做转发（它零依赖、没有 TLS 栈），
+  //    页面靠 /lan/status 给的 directoryUrl 回落。所以这里检查的是"Rust 明确知道 rooms 不是它的"。
+  for (const route of ['status', 'up', 'down']) {
+    assert.ok(js.includes(`'${route}'`) || js.includes(`=== '${route}'`), `lan.mjs 少了 ${route}`);
+    assert.ok(rs.includes(`"${route}"`), `lan.rs 少了 ${route}`);
+  }
+  assert.ok(rs.includes('("rooms"') === false, 'lan.rs 不该实现 rooms（见文件头）');
+
+  // 4) 状态词表：页面按这些字符串决定按钮说什么，两边多一个少一个都会让某个状态落进"没有按钮"。
+  const jsStates = /export const STATES = Object\.freeze\(\[([^\]]+)\]\)/.exec(js);
+  assert.ok(jsStates, 'lan.mjs 里要有 STATES');
+  const jsList = [...jsStates[1].matchAll(/'([a-z]+)'/g)].map((m) => m[1]).sort();
+  assert.deepEqual(jsList, ['degraded', 'disabled', 'error', 'starting', 'stopped', 'up']);
+  // Rust 的 describe() 直接返回 &'static str，没有一份 STATES 常量可比 —— 所以逐个查它真的会产生这些值。
+  for (const s of jsList) {
+    assert.ok(rs.includes(`"${s}"`), `lan.rs 的 describe 里没有 ${s}（页面会落到"没有按钮"）`);
+  }
+
+  // 5) /lan/status 的 JSON 字段名。页面读的就是这几个，Rust 少写一个就是"永远正在开启"。
+  for (const key of ['state', 'message', 'hint', 'directoryUrl', 'schemaVersion', 'ok']) {
+    assert.ok(js.includes(`'${key}'`) || js.includes(`.${key}`) || js.includes(key), `lan.mjs 的状态里没有 ${key}`);
+    assert.ok(rs.includes(`"${key}"`), `lan.rs 的状态里没有 ${key}`);
+  }
+
+  // 6) 两个壳都用同一个 RPC 端口与同一个网卡名 —— 玩家同时开着官方 EasyTier GUI 时靠这个不打架。
+  assert.match(js, /export const RPC_PORTAL = '127\.0\.0\.1:15988';/);
+  assert.match(rs, /pub const RPC_PORTAL: &str = "127\.0\.0\.1:15988";/);
+  assert.match(js, /export const DEV_NAME = 'stronghold-lan';/);
+  assert.match(rs, /pub const DEV_NAME: &str = "stronghold-lan";/);
+
+  // 7) 密钥两边都只能走配置文件，绝不能出现在命令行上（`ps` / 任务管理器一眼可见）。
+  //    两处噪声要先去掉，否则这条断言检查的是注释和自己：
+  //      * 注释 —— 两份源码都在注释里**提到**过 --network-secret（解释"为什么不用它"）；
+  //      * Rust 的 `#[cfg(test)]` —— 那里的用例正是在断言 TOML 里没有这个字符串。
+  const strip = (src) => src
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '')
+    .split('#[cfg(test)]')[0];
+  assert.match(js, /return \['-c', configPath\];/);
+  assert.match(rs, /\.arg\("-c"\)/);
+  for (const [name, src] of [['lan.mjs', js], ['lan.rs', rs]]) {
+    assert.ok(!/--network-secret/.test(strip(src)), `${name}：密钥不许出现在 argv 里`);
+  }
+
+  // 8) 打包配置：两个壳都必须把 sidecar 打进产物，且落在 lan/ 这个名字上。
+  const conf = JSON.parse(fs.readFileSync(path.join(ROOT, 'tauri', 'src-tauri', 'tauri.conf.json'), 'utf8'));
+  assert.ok(conf.bundle.resources.includes('lan'), 'tauri.conf.json 的 bundle.resources 少了 lan');
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'desktop', 'package.json'), 'utf8'));
+  assert.ok(pkg.build.extraResources.some((r) => r.to === 'lan'), 'desktop/package.json 的 extraResources 少了 lan');
 });

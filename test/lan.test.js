@@ -92,6 +92,18 @@ test('describeStatus: EPERM turns into the Windows Administrator hint', () => {
   assert.match(s.hint, /以管理员身份运行/);
 });
 
+test('describeStatus: a sidecar that died on startup gets the Administrator hint too', () => {
+  // The case that actually happens on Windows: `spawn` succeeds, easytier-core cannot create the TUN adapter
+  // and exits. The message is a plain exit code, so the hint must not be driven by an EPERM string match.
+  const s = describeStatus({ config: GOOD, child: false, reachable: null, error: 'easytier-core 退出，代码 1：failed to create tun device', diedEarly: true });
+  assert.equal(s.state, 'error');
+  assert.match(s.hint, /以管理员身份运行/);
+  // ...but a sidecar that ran for a while and then died is NOT an elevation problem, and must not say so.
+  const later = describeStatus({ config: GOOD, child: false, reachable: null, error: 'easytier-core 退出，代码 1', diedEarly: false });
+  assert.equal(later.state, 'error');
+  assert.doesNotMatch(later.hint, /以管理员身份运行/);
+});
+
 test('describeStatus: child alive + official reachable = up; alive but unreachable = degraded', () => {
   assert.equal(describeStatus({ config: GOOD, child: true, reachable: true, pid: 42 }).state, 'up');
   const degraded = describeStatus({ config: GOOD, child: true, reachable: false, pid: 42 });
@@ -203,8 +215,54 @@ test('manager surfaces a spawn failure as error (e.g. Windows without Administra
   assert.match(body.hint, /以管理员身份运行/);
 });
 
-test('manager proxies the directory and degrades when it is missing or unreachable', async () => {
+test('manager reports a sidecar that dies on startup, and keeps its last words', async () => {
   const dir = tempLanDir();
+  const child = fakeChild();
+  const mgr = createLanManager({
+    candidates: [{ dir, source: 'resources' }],
+    userDataDir: fs.mkdtempSync(path.join(os.tmpdir(), 'sp-ud-')),
+    spawn: () => {
+      setTimeout(() => {
+        child.stderr.emit('data', Buffer.from('failed to create tun device: access is denied\n'));
+        child.emit('exit', 1, null);
+      }, 0);
+      return child;
+    },
+    fetchImpl: async () => { throw new Error('unreachable'); },
+    logger: { log() {}, warn() {} },
+  });
+  const [req, res] = fakeReq('POST', '/lan/up');
+  await mgr.handle(req, res);
+  const body = JSON.parse(res.body);
+  assert.equal(body.state, 'error');
+  assert.match(body.message, /代码 1/);
+  assert.match(body.message, /access is denied/, 'the sidecar own last stderr line is the only real clue');
+  assert.match(body.hint, /以管理员身份运行/);
+  assert.equal(mgr._state.diedEarly, true);
+});
+
+test('the shared secret never reaches the status payload or the captured stderr tail', async () => {
+  const dir = tempLanDir();
+  const child = fakeChild();
+  const mgr = createLanManager({
+    candidates: [{ dir, source: 'resources' }],
+    userDataDir: fs.mkdtempSync(path.join(os.tmpdir(), 'sp-ud-')),
+    spawn: () => {
+      setTimeout(() => {
+        child.stderr.emit('data', Buffer.from(`handshake with ${GOOD.networkSecret} refused\n`));
+        child.emit('exit', 1, null);
+      }, 0);
+      return child;
+    },
+    fetchImpl: async () => { throw new Error('unreachable'); },
+    logger: { log() {}, warn() {} },
+  });
+  const [req, res] = fakeReq('POST', '/lan/up');
+  await mgr.handle(req, res);
+  assert.doesNotMatch(res.body, /S3CRET/, 'the sidecar may echo the secret; the status must not');
+});
+
+test('manager proxies the directory and degrades when it is missing or unreachable', async () => {  const dir = tempLanDir();
   const ok = createLanManager({
     candidates: [{ dir, source: 'resources' }],
     userDataDir: os.tmpdir(),

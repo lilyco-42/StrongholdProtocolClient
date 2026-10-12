@@ -17,7 +17,7 @@
     "targets": ["nsis"],
     "category": "Game",
     "icon": ["icons/icon.ico"],
-    "resources": ["www"],
+    "resources": ["www", "lan"],
     "windows": {
       "webviewInstallMode": {
         "type": "downloadBootstrapper"

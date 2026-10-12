@@ -354,6 +354,7 @@ fn serve_connection(
     root: &Path,
     stats: &Arc<ServeStats>,
     shell: &Option<Arc<dyn ShellCommand>>,
+    lan: &Option<Arc<crate::lan::LanManager>>,
     t0: std::time::Instant,
 ) {
     stats.connections.fetch_add(1, Ordering::Relaxed);
@@ -399,7 +400,7 @@ fn serve_connection(
             version: parts.next().unwrap_or("HTTP/1.0").to_string(),
             headers,
         };
-        match handle_request(&mut sock, root, stats, shell, t0, &req) {
+        match handle_request(&mut sock, root, stats, shell, lan, t0, &req) {
             Ok(true) => continue,
             Ok(false) | Err(_) => return,
         }
@@ -412,6 +413,7 @@ fn handle_request(
     root: &Path,
     stats: &Arc<ServeStats>,
     shell: &Option<Arc<dyn ShellCommand>>,
+    lan: &Option<Arc<crate::lan::LanManager>>,
     t0: std::time::Instant,
     req: &Req,
 ) -> std::io::Result<bool> {
@@ -440,7 +442,17 @@ fn handle_request(
         }
     }
 
-    // The shell command is the one POST this server takes, so it is matched before the method gate. Answering 503
+    // 虚拟局域网 sidecar（lan.rs）自己认领整个 `/lan/` 前缀，而且**要收 POST**（up / down）——
+    // 所以它必须排在下面那道"只收 GET/HEAD"的闸门**之前**。没有 sidecar 的构建在这里就是普通 404，
+    // 选服页据此判定"这个构建不能联机"并收起那张卡片（P1，与 docs/SERVER-LIST.md 同一条规则）。
+    if let Some(l) = lan {
+        if let Some((code, body)) = l.handle(method, raw_url) {
+            let _ = write_json(sock, status_line(code), &body);
+            return Ok(false);
+        }
+    }
+
+    // The shell command is matched before the method gate too. Answering 503
     // while the window is still being built is deliberate: `picker.js` puts the status into `__SP_F11_STATE__`, and
     // `sent:503` vs `sent:200` is the difference between "the shell never got round to it" and "the shell ran it".
     if split_query(raw_url).0 == SHELL_FULLSCREEN_PATH {
@@ -609,17 +621,40 @@ fn write_plain(sock: &mut TcpStream, status: &str, body: &str, extra: &str) -> s
     sock.flush()
 }
 
+/// A JSON answer for the `/lan/*` endpoints. Same framing rules as `write_plain`: these end the connection.
+/// The picker asks for one of these at a time and reconnects when it needs another, so the bookkeeping that
+/// keep-alive would save is not worth the second code path.
+fn write_json(sock: &mut TcpStream, status: &str, body: &str) -> std::io::Result<()> {
+    let msg = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: application/json; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    sock.write_all(msg.as_bytes())?;
+    sock.flush()
+}
+
+/// `lan.rs` 只回三个码，这里如实写出来 —— 状态行是给玩家/日志看的，不是只有数字。
+fn status_line(code: u16) -> &'static str {
+    match code {
+        200 => "200 OK",
+        404 => "404 Not Found",
+        _ => "500 Internal Server Error",
+    }
+}
+
 /// Bind and serve on a background thread. Returns the bound port (the caller builds the window URL from it, and the
 /// whole point of pinning is that the page's origin — and therefore its localStorage — stays put across launches).
 pub fn spawn_server(root: PathBuf, stats: Arc<ServeStats>) -> std::io::Result<(u16, thread::JoinHandle<()>)> {
-    spawn_server_with(root, stats, None)
+    spawn_server_with(root, stats, None, None)
 }
 
-/// `spawn_server` plus the shell command handler (the Tauri `main` passes one; tests pass a recording fake).
+/// `spawn_server` plus the shell command handler (the Tauri `main` passes one; tests pass a recording fake) and the
+/// virtual-LAN sidecar (`lan.rs`). Both are optional: a test that only wants to serve files passes `None, None`.
 pub fn spawn_server_with(
     root: PathBuf,
     stats: Arc<ServeStats>,
     shell: Option<Arc<dyn ShellCommand>>,
+    lan: Option<Arc<crate::lan::LanManager>>,
 ) -> std::io::Result<(u16, thread::JoinHandle<()>)> {
     let mut listener: Option<TcpListener> = None;
     if DEFAULT_PORT <= u16::MAX - PORT_SEARCH {
@@ -645,7 +680,8 @@ pub fn spawn_server_with(
             let root = root.clone();
             let stats = Arc::clone(&stats);
             let shell = shell.clone();
-            thread::spawn(move || serve_connection(sock, &root, &stats, &shell, t0));
+            let lan = lan.clone();
+            thread::spawn(move || serve_connection(sock, &root, &stats, &shell, &lan, t0));
         }
     });
     Ok((port, h))
@@ -891,13 +927,13 @@ mod tests {
     }
 
     #[test]
-    fn the_shell_command_route_is_the_one_post_this_server_takes() {
+    fn the_shell_command_route_is_a_post_and_rejects_get() {
         let root = sandbox("shellcmd");
         fs::write(root.join("index.html"), "<html>ok</html>").unwrap();
         let stats = Arc::new(ServeStats::default());
         let shell = Arc::new(FakeShell { calls: std::sync::Mutex::new(Vec::new()) });
         let handler: Arc<dyn ShellCommand> = shell.clone();
-        let (port, _h) = spawn_server_with(root.clone(), Arc::clone(&stats), Some(handler)).unwrap();
+        let (port, _h) = spawn_server_with(root.clone(), Arc::clone(&stats), Some(handler), None).unwrap();
 
         let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
         s.set_read_timeout(Some(Duration::from_secs(5))).ok();
@@ -935,6 +971,71 @@ mod tests {
         let got = read_until(&mut s, "503");
         assert!(got.contains("503 Service Unavailable"), "没有壳处理器时该答 503：{got:?}");
         assert!(got.contains("fullscreen=unavailable"), "正文要说清为什么：{got:?}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// `/lan/*` 必须真的接上 HTTP，而不只是 `lan.rs` 里那个纯函数返回对了。
+    ///
+    /// 这条是跨模块的：`spawn_server_with` 的参数、`serve_connection` / `handle_request` 的传递链、
+    /// 以及**排在"只收 GET/HEAD"闸门之前**这件事，任何一处漏了这里都会红。第三点尤其要紧 ——
+    /// `up` / `down` 是 POST，闸门一旦挡在前面，玩家点「开启联机」就只会拿到 405。
+    #[test]
+    fn the_lan_routes_are_wired_through_http_including_the_posts() {
+        let root = sandbox("lan-route");
+        fs::write(root.join("index.html"), "<html>ok</html>").unwrap();
+        let stats = Arc::new(ServeStats::default());
+        // 空的候选目录 = 这个构建没打进 sidecar。此时 /lan/status 必须是 200 + state=disabled：
+        // 选服页靠这个（而不是 404）分清"壳在、但没有组件"和"根本没有壳"。
+        let lan = Arc::new(crate::lan::LanManager::new(vec![], std::env::temp_dir()));
+        let (port, _h) = spawn_server_with(root.clone(), Arc::clone(&stats), None, Some(lan)).unwrap();
+
+        let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(5))).ok();
+        ask(&mut s, "GET /lan/status HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+        let got = read_until(&mut s, "disabled");
+        assert!(got.contains("200 OK"), "/lan/status 该答 200：{got:?}");
+        assert!(
+            got.contains("Content-Type: application/json"),
+            "页面要 res.json()，必须是 JSON：{got:?}"
+        );
+        assert!(got.contains("\"state\":\"disabled\""), "没打进 sidecar 的构建是 disabled：{got:?}");
+
+        // POST /lan/down 是幂等的：没有隧道时也答 200，而不是 405 或 500。
+        let mut p = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        p.set_read_timeout(Some(Duration::from_secs(5))).ok();
+        ask(&mut p, "POST /lan/down HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\n\r\n");
+        let down = read_until(&mut p, "\"ok\"");
+        assert!(down.contains("200 OK"), "POST /lan/down 该答 200：{down:?}");
+
+        // 本壳不实现目录转发，所以 /lan/rooms 是 404 —— 页面据此回落到直接取 directoryUrl。
+        let mut r = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        r.set_read_timeout(Some(Duration::from_secs(5))).ok();
+        ask(&mut r, "GET /lan/rooms HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+        let rooms = read_until(&mut r, "404");
+        assert!(rooms.contains("404 Not Found"), "/lan/rooms 该答 404：{rooms:?}");
+
+        // 静态资源不受影响：没接 sidecar 的路径照旧走文件查找。
+        let mut f = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        f.set_read_timeout(Some(Duration::from_secs(5))).ok();
+        ask(&mut f, "GET /index.html HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+        let page = read_until(&mut f, "<html>");
+        assert!(page.contains("200 OK"), "静态文件被 /lan 抢了：{page:?}");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 没接 sidecar 的构建（`spawn_server`，也就是所有旧调用点）：`/lan/*` 就是普通 404，不能 panic。
+    #[test]
+    fn without_a_lan_manager_the_lan_paths_are_ordinary_404s() {
+        let root = sandbox("lan-absent");
+        fs::write(root.join("index.html"), "<html>ok</html>").unwrap();
+        let stats = Arc::new(ServeStats::default());
+        let (port, _h) = spawn_server(root.clone(), Arc::clone(&stats)).unwrap();
+        let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(5))).ok();
+        ask(&mut s, "GET /lan/status HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+        let got = read_until(&mut s, "404");
+        assert!(got.contains("404"), "{got:?}");
         let _ = fs::remove_dir_all(&root);
     }
 }

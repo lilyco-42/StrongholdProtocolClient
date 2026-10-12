@@ -120,6 +120,29 @@ jobs:
           [ "$CONF" = "$APP" ] && [ "$CARGO" = "$APP" ] && [ "$PKG" = "$APP" ] || {
             echo "闸门：Tauri 壳的版本（conf/Cargo/package.json）与 payload 的 game.app 不一致 —— 装出来的 exe 会显示错版本"; exit 1; }
 
+      # 虚拟局域网 sidecar（EasyTier 上游二进制 + lan-config.json），与 Electron 那条同一份逻辑。
+      # 放在 tauri/src-tauri/lan/ —— tauri.conf.json 的 bundle.resources 里有 "lan"，路径就是相对它算的。
+      # 密钥走 secrets：那是所有玩家共用的网络口令，写进 git 等于公开。
+      # 没配密钥不算失败（这次构建的客户端不含联机组件），配了则下载失败必须红。
+      - name: 内置联机组件（EasyTier sidecar）
+        shell: bash
+        env:
+          SP_LAN_NETWORK_NAME: ${{ secrets.SP_LAN_NETWORK_NAME }}
+          SP_LAN_NETWORK_SECRET: ${{ secrets.SP_LAN_NETWORK_SECRET }}
+          SP_LAN_PEERS: ${{ secrets.SP_LAN_PEERS }}
+          SP_LAN_DIRECTORY_URL: ${{ secrets.SP_LAN_DIRECTORY_URL }}
+        run: |
+          set -euo pipefail
+          if [ -n "${SP_LAN_NETWORK_SECRET:-}" ]; then
+            echo "已配置联机密钥：sidecar 下载失败将视为致命错误"
+            node tools/fetch-lan-core.mjs --platform win32 --arch x64 --out tauri/src-tauri/lan --require
+          else
+            echo "::warning::未配置 SP_LAN_NETWORK_SECRET —— 本次构建的 Tauri 客户端不含联机组件"
+            node tools/fetch-lan-core.mjs --platform win32 --arch x64 --out tauri/src-tauri/lan || true
+            mkdir -p tauri/src-tauri/lan
+          fi
+          ls -l tauri/src-tauri/lan
+
       - name: 图标（复用桌面壳那份，避免出现第二个真源）
         shell: bash
         run: |
@@ -159,9 +182,36 @@ jobs:
           mkdir -p out/StrongholdProtocolTauri
           cp tauri/src-tauri/target/release/stronghold-protocol-tauri.exe out/StrongholdProtocolTauri/StrongholdProtocolTauri.exe
           cp -r "$WWW_DIR" out/StrongholdProtocolTauri/www
+          cp -r tauri/src-tauri/lan out/StrongholdProtocolTauri/lan
           test -s out/StrongholdProtocolTauri/StrongholdProtocolTauri.exe
           test -f out/StrongholdProtocolTauri/www/index.html
           du -sh out/StrongholdProtocolTauri
+
+      # 联机组件必须真的落在产物里：bundle.resources 漂了、或 fetcher 静默降级，玩家会下到
+      # "有联机按钮但点了没反应"的客户端 —— 那比没有按钮更糟。配了密钥就要求齐，没配则只核对目录在。
+      - name: 联机组件（产物内，闸门）
+        shell: bash
+        env:
+          SP_LAN_NETWORK_SECRET: ${{ secrets.SP_LAN_NETWORK_SECRET }}
+        run: |
+          set -euo pipefail
+          LAN=out/StrongholdProtocolTauri/lan
+          test -d "$LAN" || { echo "产物里没有 lan/ —— bundle.resources 漂了"; exit 1; }
+          ls -l "$LAN"
+          if [ -n "${SP_LAN_NETWORK_SECRET:-}" ]; then
+            for f in easytier-core.exe wintun.dll lan-config.json; do
+              test -f "$LAN/$f" || { echo "产物里缺 lan/$f"; exit 1; }
+            done
+            node -e '
+              const c = require("./out/StrongholdProtocolTauri/lan/lan-config.json");
+              if (!c.networkName || !c.networkSecret || !Array.isArray(c.peers) || !c.peers.length) {
+                throw new Error("lan-config.json 不完整");
+              }
+              console.log(`联机配置 OK：${c.networkName} / ${c.peers.length} 个共享节点 / 官方服 ${c.officialVirtualIp}:${c.port}`);
+            '
+          else
+            echo "::notice::未配置联机密钥，跳过内容核对（目录存在即可）"
+          fi
 
       # 出厂字节的零外链闸门：装在目录版里那份 www（与安装器打进去的是同一棵树）。
       - name: 零外部依赖（产物内，闸门）

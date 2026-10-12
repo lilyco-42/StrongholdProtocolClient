@@ -15,6 +15,11 @@ tauri-build = { version = "2", features = [] }
 # 不加额外运行时（WebView2 自带检查器），代价只是这个 feature 名写错时编译失败，不会静默少功能。
 tauri = { version = "2", features = ["devtools"] }
 
+# lan.rs 用它读构建期写下的 lan-config.json、并拼 /lan/status 的 JSON。**不是新依赖**：
+# tauri 自己就依赖 serde_json，这里只是把它提成直接依赖，产物一个字节都不会变大。
+# 手写一个 JSON 解析器是这里最容易犯的"重造轮子"——而这份配置是安全相关的（网络口令）。
+serde_json = "1"
+
 # 这个壳的存在理由就是省体积，所以发布构建按体积优先。
 [profile.release]
 opt-level = "z"

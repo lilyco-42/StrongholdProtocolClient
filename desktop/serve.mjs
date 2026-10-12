@@ -170,7 +170,7 @@ export function parseRange(header, size) {
  * @param {{ root: string, host?: string, port?: number, log?: { warn?: Function, error?: Function } }} opts
  * @returns {Promise<{ url: string, port: number, server: http.Server, close: () => Promise<void> }>}
  */
-export function createStaticServer({ root, host = '127.0.0.1', port = 0, log = console } = {}) {
+export function createStaticServer({ root, host = '127.0.0.1', port = 0, log = console, lan = null } = {}) {
   const rootAbs = path.resolve(root);
 
   const finish = (req, res, status, headers, body) => {
@@ -179,6 +179,10 @@ export function createStaticServer({ root, host = '127.0.0.1', port = 0, log = c
   };
 
   async function handle(req, res) {
+    // The virtual-LAN sidecar owns `/lan/*` (see lan.mjs). It answers same-origin so the picker needs neither a
+    // second origin nor a CORS rule; when no sidecar is wired the paths simply fall through to a 404 below, which
+    // the picker reads as "this build cannot do LAN play".
+    if (lan && await lan.handle(req, res)) return;
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       res.setHeader('Allow', 'GET, HEAD');
       finish(req, res, 405, { 'Content-Type': 'text/plain; charset=utf-8' }, 'method not allowed');

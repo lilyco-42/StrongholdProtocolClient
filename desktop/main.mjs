@@ -26,6 +26,7 @@ import { existsSync, appendFileSync, statSync, writeFileSync } from 'node:fs';
 import { app, BrowserWindow, Menu, dialog, shell } from 'electron';
 import { createStaticServer, DEFAULT_PORT } from './serve.mjs';
 import { resolveWww, wwwCandidates } from './payload-path.mjs';
+import { createLanManager, lanCandidates } from './lan.mjs';
 import { describeCertificate, fingerprintOf, hostKey, isTrusted, loadTrusted, remember, saveTrusted, shortFingerprint } from './trust.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -204,10 +205,24 @@ async function main() {
     return;
   }
 
+  // The virtual-LAN sidecar (lan.mjs). Deliberately NOT started here: bringing up a TUN adapter needs
+  // Administrator on Windows, so the player opts in from the picker's 联机 button and only then does the shell
+  // spawn easytier-core. A build without lan-config.json reports `disabled` and everything else keeps working.
+  const lan = createLanManager({
+    candidates: lanCandidates({
+      env: process.env,
+      resourcesPath: app.isPackaged ? process.resourcesPath : undefined,
+      repoRoot: app.isPackaged ? undefined : path.join(HERE, '..'),
+    }),
+    userDataDir: app.getPath('userData'),
+    logger: console,
+  });
+  log(`[lan] sidecar: ${lan.status().state}${lan.status().source ? ` (from ${lan.status().source})` : ''}`);
+
   // A pinned port (not `0`) keeps `http://127.0.0.1:<port>` — the page's origin — identical across launches.
   // Chromium scopes localStorage by origin, so this is what lets the identity token, the loadout, settings and
   // the picker's saved server survive a restart; an OS-assigned port would silently discard all of it.
-  const served = await createStaticServer({ root: WWW, port: DEFAULT_PORT, log: console });
+  const served = await createStaticServer({ root: WWW, port: DEFAULT_PORT, log: console, lan });
   const query = serverOverride
     ? `?server=${encodeURIComponent(serverOverride)}`
     : (chooseServer ? '?pick=1' : '');
@@ -261,7 +276,7 @@ async function main() {
     if (win) { if (win.isMinimized()) win.restore(); win.focus(); }
   });
   app.on('window-all-closed', () => app.quit());
-  app.on('quit', () => { served.close().catch(() => {}); });
+  app.on('quit', () => { served.close().catch(() => {}); lan.stop(); });
 }
 
 app.whenReady().then(main, (err) => {

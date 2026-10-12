@@ -109,6 +109,31 @@ jobs:
       - name: 装 Electron 依赖
         run: cd desktop && npm install
 
+      # 内置虚拟局域网 sidecar（EasyTier 上游二进制 + lan-config.json）。
+      # 为什么要有这一步：desktop/package.json 的 extraResources 列了 ../build/lan，目录不存在
+      # electron-builder 会直接中断整个构建 —— 所以无论成败都必须先把目录建出来。
+      # 为什么密钥走 secrets 而不是进仓库：那是所有玩家共用的网络口令，写进 git 等于公开。
+      # 为什么没配密钥不算失败：没配就是"这次构建的客户端不含联机组件"，其余功能一切照旧；
+      #   但一旦配了密钥，下载失败就是真问题（玩家会拿不到承诺的联机），此时 --require 让它红。
+      - name: 内置联机组件（EasyTier sidecar）
+        shell: bash
+        env:
+          SP_LAN_NETWORK_NAME: ${{ secrets.SP_LAN_NETWORK_NAME }}
+          SP_LAN_NETWORK_SECRET: ${{ secrets.SP_LAN_NETWORK_SECRET }}
+          SP_LAN_PEERS: ${{ secrets.SP_LAN_PEERS }}
+          SP_LAN_DIRECTORY_URL: ${{ secrets.SP_LAN_DIRECTORY_URL }}
+        run: |
+          set -euo pipefail
+          if [ -n "${SP_LAN_NETWORK_SECRET:-}" ]; then
+            echo "已配置联机密钥：sidecar 下载失败将视为致命错误"
+            node tools/fetch-lan-core.mjs --platform win32 --arch x64 --out build/lan --require
+          else
+            echo "::warning::未配置 SP_LAN_NETWORK_SECRET —— 本次构建的客户端不含联机组件（选服页不显示联机卡片）"
+            node tools/fetch-lan-core.mjs --platform win32 --arch x64 --out build/lan || true
+            mkdir -p build/lan
+          fi
+          ls -l build/lan
+
       - name: 打 Windows 目录版
         run: cd desktop && npm run pack
 
@@ -128,6 +153,32 @@ jobs:
           compgen -G "build/desktop/*-Setup.exe" > /dev/null || {
             echo "NSIS 安装包没生成"; ls -l build/desktop; exit 1; }
           ls -lh build/desktop/*.exe
+
+      # 联机组件必须真的落在产物里：extraResources 写错、或 fetcher 静默降级，都会让玩家下到一个
+      # "有联机按钮但点了没反应"的客户端 —— 那比没有按钮更糟。配了密钥就要求齐，没配则只核对目录在。
+      - name: 联机组件（产物内，闸门）
+        shell: bash
+        env:
+          SP_LAN_NETWORK_SECRET: ${{ secrets.SP_LAN_NETWORK_SECRET }}
+        run: |
+          set -euo pipefail
+          LAN=build/desktop/win-unpacked/resources/lan
+          test -d "$LAN" || { echo "产物里没有 resources/lan —— extraResources 漂了"; exit 1; }
+          ls -l "$LAN"
+          if [ -n "${SP_LAN_NETWORK_SECRET:-}" ]; then
+            for f in easytier-core.exe wintun.dll lan-config.json; do
+              test -f "$LAN/$f" || { echo "产物里缺 resources/lan/$f"; exit 1; }
+            done
+            node -e '
+              const c = require("./build/desktop/win-unpacked/resources/lan/lan-config.json");
+              if (!c.networkName || !c.networkSecret || !Array.isArray(c.peers) || !c.peers.length) {
+                throw new Error("lan-config.json 不完整");
+              }
+              console.log(`联机配置 OK：${c.networkName} / ${c.peers.length} 个共享节点 / 官方服 ${c.officialVirtualIp}:${c.port}`);
+            '
+          else
+            echo "::notice::未配置联机密钥，跳过内容核对（目录存在即可）"
+          fi
 
       # 在真正的 app.asar 里核验 Electron 主进程需要的文件；只核对源代码/打包配置会漏掉缺失模块。
       # 曾因 files[] 漏掉 payload-path.mjs 导致 ERR_MODULE_NOT_FOUND，目录版/便携版/安装版均无法启动。

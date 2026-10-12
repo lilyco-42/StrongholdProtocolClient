@@ -1,13 +1,14 @@
 // Builds the desktop client: assemble the payload from a game checkout, install the Electron shell's deps when
 // needed, then run electron-builder. See docs/PACKAGING.md.
 //
-//   node tools/package-desktop.mjs [--server <addr>] [--game <checkout>] [--portable] [--skip-install]
+//   node tools/package-desktop.mjs [--server <addr>] [--game <checkout>] [--portable] [--skip-install] [--lan-required]
 //
 //   --server <addr>   game server the client connects to (default: client.config.json / localhost:3000)
 //   --game <dir>      Stronghold-Protocol checkout (default: SP_GAME_ROOT / client.config.json / ../Stronghold-Protocol)
 //   --portable        single-file portable .exe instead of the folder (it unpacks the whole app to %TEMP% on
 //                     *every* launch: ~24 s to the first screen versus ~0.5 s for the folder)
 //   --skip-install    do not run `npm install` in desktop/ even when electron is missing
+//   --lan-required    a failed EasyTier sidecar download aborts the build (default: degrade to "no LAN")
 //
 // The default target is the folder (`dir`) → `build/desktop/win-unpacked/`: a normal .exe with its DLLs, locales
 // and resources/ beside it. That is what gets distributed (zip it yourself, see docs/PACKAGING.md §4). Either way
@@ -21,6 +22,7 @@ import { fileURLToPath } from 'node:url';
 import { CLIENT_ROOT, assembleClient, parseCommonArgs } from './package-client.mjs';
 
 const DESKTOP = path.join(CLIENT_ROOT, 'desktop');
+const LAN_DIR = path.join(CLIENT_ROOT, 'build', 'lan');
 
 /** electron-builder targets for the requested output (see the header). */
 export function desktopTargets({ portable = false } = {}) {
@@ -49,6 +51,24 @@ function run(cmd, args, cwd) {
   if (r.status !== 0) throw new Error(`${cmd} ${args.join(' ')} exited with ${r.status}`);
 }
 
+/**
+ * Make sure `build/lan/` exists before electron-builder runs: `desktop/package.json` lists it in
+ * `extraResources`, and electron-builder aborts the whole build when a `from` path is missing.
+ *
+ * We try to stage the real sidecar (upstream `easytier-core` + `lan-config.json`); if the download fails
+ * (offline, mirror down) we still create the directory so the build succeeds — the packaged client then just
+ * reports "联机未配置" and everything else works. `--lan-required` makes a failure fatal instead.
+ */
+function stageLan(o = {}) {
+  const fetcher = path.join(CLIENT_ROOT, 'tools', 'fetch-lan-core.mjs');
+  const args = [fetcher, '--out', 'build/lan'];
+  if (o.lanRequired) args.push('--require');
+  const r = spawnSync(process.execPath, args, { cwd: CLIENT_ROOT, stdio: 'inherit', env: childEnv() });
+  if (r.status !== 0 && o.lanRequired) throw new Error('fetch-lan-core.mjs 失败（--lan-required）');
+  // Belt and braces: even a hard crash inside the fetcher must not leave electron-builder without the dir.
+  fs.mkdirSync(LAN_DIR, { recursive: true });
+}
+
 /** Total size of a directory tree. */
 function dirBytes(dir) {
   let n = 0;
@@ -58,6 +78,7 @@ function dirBytes(dir) {
 
 export function buildDesktop(o = {}) {
   const built = assembleClient({ server: o.server, gameRoot: o.game });
+  stageLan(o);
 
   const builder = pkgBin(path.join(DESKTOP, 'node_modules', 'electron-builder'), 'electron-builder');
   const electronDist = path.join(DESKTOP, 'node_modules', 'electron', 'dist');
@@ -92,6 +113,6 @@ export function buildDesktop(o = {}) {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const o = parseCommonArgs(process.argv.slice(2));
-  if (o.help) console.log('usage: node tools/package-desktop.mjs [--server <address>] [--game <checkout>] [--portable] [--skip-install]');
+  if (o.help) console.log('usage: node tools/package-desktop.mjs [--server <address>] [--game <checkout>] [--portable] [--skip-install] [--lan-required]');
   else buildDesktop(o);
 }

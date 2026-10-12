@@ -266,6 +266,8 @@ export const SHELL_FILES = [
   ['picker-core.js', 'js/shell/picker-core.js'],
   // The second server-list channel (docs/SERVER-LIST.md): the picker imports it statically, so it must be here.
   ['serverList.js', 'js/shell/serverList.js'],
+  // The virtual-LAN channel (shell/lanRooms.js): the picker imports it statically, so it must be in the payload.
+  ['lanRooms.js', 'js/shell/lanRooms.js'],
   ['display.css', 'css/shell-display.css'],
 ];
 
@@ -276,7 +278,7 @@ export function shellSource(name) {
 
 /** CLI arguments shared by package-client / package-desktop / package-android. */
 export function parseCommonArgs(argv) {
-  const o = { server: undefined, game: undefined, out: undefined, quiet: false, release: false, dir: false, portable: false, skipInstall: false, help: false };
+  const o = { server: undefined, game: undefined, out: undefined, quiet: false, release: false, dir: false, portable: false, skipInstall: false, lanRequired: false, help: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const eq = a.indexOf('=');
@@ -291,6 +293,8 @@ export function parseCommonArgs(argv) {
     else if (key === '--dir') o.dir = true;
     else if (key === '--portable') o.portable = true;
     else if (key === '--skip-install') o.skipInstall = true;
+    // Desktop only: make a failed EasyTier sidecar download abort the build instead of degrading to "no LAN".
+    else if (key === '--lan-required') o.lanRequired = true;
     else if (key === '-h' || key === '--help') o.help = true;
     else throw new Error(`unknown option ${a}`);
   }

@@ -446,7 +446,7 @@ describe('desktop packaging layout', () => {
     assert.deepEqual(desktopTargets({ portable: true }), ['portable']);
   });
 
-  test('electron-builder config agrees: folder + portable + installer targets, trimmed locales, payload as resources/www', () => {
+  test('electron-builder config agrees: folder + portable + installer targets, trimmed locales, payload as resources/www + lan sidecar', () => {
     const build = JSON.parse(readFileSync(path.join(ROOT, 'desktop', 'package.json'), 'utf8')).build;
     // dir 是整包目录（zip 分发），portable 与 Setup 是玩家直接双击的单文件 —— build-clients.yml 的「校验产物」
     // 按 *-portable.exe / *-Setup.exe 后缀找它们，所以下面两个 artifactName 必须和那里成对改。
@@ -457,7 +457,12 @@ describe('desktop packaging layout', () => {
     assert.equal(build.msi, undefined, 'msi 尚未启用：需要 electron-builder 27');
     // Electron ships ~48 locales (~48 MB); a Chinese/English game only needs these two.
     assert.deepEqual(build.electronLanguages, ['zh-CN', 'en-US']);
-    assert.deepEqual(build.extraResources, [{ from: '../build/client/www', to: 'www' }]);
+    // 第二个 resource 是虚拟局域网 sidecar（easytier-core + lan-config.json）。它必须跟 www 一样进 resources/，
+    // 因为 desktop/lan.mjs 只从 resourcesPath 找它；缺了不会崩，只是 /lan/* 恒 404、选服页不显示联机卡片。
+    assert.deepEqual(build.extraResources, [
+      { from: '../build/client/www', to: 'www' },
+      { from: '../build/lan', to: 'lan' },
+    ]);
     assert.equal(build.directories.output, '../build/desktop');
   });
 
@@ -466,6 +471,8 @@ describe('desktop packaging layout', () => {
     assert.equal(o.server, 'x:1');
     assert.equal(o.portable, true);
     assert.equal(parseCommonArgs([]).portable, false);
+    assert.equal(parseCommonArgs([]).lanRequired, false, 'a missing sidecar download degrades, it does not fail the build');
+    assert.equal(parseCommonArgs(['--lan-required']).lanRequired, true, '--lan-required flips that to fatal for a release');
     assert.equal(parseCommonArgs(['--dir']).dir, true, '--dir is still accepted (it is the default now)');
     assert.throws(() => parseCommonArgs(['--nope']), /unknown option/);
   });

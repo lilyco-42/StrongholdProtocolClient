@@ -26,6 +26,7 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { DATA_SHIM_JS, GAME_MOUNTS, SIM_PRIVATE, findGameRoot, readAppVersion, readProtocolVersion, verifyGameContract } from './game-contract.mjs';
 import { PATCHED_FILES, applyPayloadPatch, assertPatched } from './payload-patches.mjs';
+import { lowerClassStaticBlocks } from './safari15-syntax.mjs';
 
 export const CLIENT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const DEFAULT_SERVER = 'localhost:3000';
@@ -100,6 +101,19 @@ export function assembleClient(opts = {}) {
   // patched ones (see tools/payload-patches.mjs). Skipping them here keeps the patch from stacking on itself.
   const DERIVED = new Set(['data.js', 'js/runtime-config.js', 'build.json', ...PATCHED_FILES]);
 
+  // The vendored ES modules are *derived* too, not mirrored: each one is lowered to what Safari 15 can parse on the
+  // way in (tools/safari15-syntax.mjs). three.js ships ES2022 class static blocks and Safari only learned those in
+  // 16.4, while the packaged app declares iOS 15.0 — on iOS 15.x–16.3 the 3D board's `import('/vendor/three.module.js')`
+  // rejects with a SyntaxError and public/js/render/board3d/load.js turns that into its 2D fallback, silently.
+  // Treating them as derived keeps the rewrite from stacking on itself, and a module with nothing to lower is written
+  // only when its bytes actually change (so an unchanged payload stays byte-identical).
+  const LOWERED = new Set();
+  const vendorSource = path.join(gameRoot, 'public', 'vendor');
+  if (fs.existsSync(vendorSource)) {
+    for (const n of fs.readdirSync(vendorSource)) if (n.endsWith('.js')) LOWERED.add(`vendor/${n}`);
+  }
+  for (const rel of LOWERED) DERIVED.add(rel);
+
   /** Mirror one source tree into the payload; every mirrored path is recorded in `expected`. */
   const mirror = (relSrc, relDst, keep = null) => {
     const srcRoot = path.join(gameRoot, relSrc);
@@ -173,6 +187,12 @@ export function assembleClient(opts = {}) {
   // Client-repo only: the browser build has neither file, its server is always its own origin and its HUD is the
   // one the game repo ships.
   for (const [name, rel] of SHELL_FILES) writeGenerated(rel, shellSource(name));
+  // Lower the vendored ES modules (see LOWERED above). A module with no class static block comes back unchanged and
+  // writeGenerated then writes nothing — so this is a no-op for every vendor file except the one that needs it.
+  for (const rel of LOWERED) {
+    const from = path.join(gameRoot, 'public', rel);
+    if (fs.existsSync(from)) writeGenerated(rel, lowerClassStaticBlocks(fs.readFileSync(from, 'utf8')));
+  }
   // /packs/index.json — the content-pack menu (0.2.0: `js/ui/lang.js`, docs/PACKS.md). The browser build asks the
   // *server's* registry for it; a packaged client has no server, so the game repo's own generator writes the index of
   // the checkout this payload mirrors (public/i18n + data/i18n + packs/ all become payload paths). An older checkout

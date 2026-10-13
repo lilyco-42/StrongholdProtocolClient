@@ -24,7 +24,7 @@
 | --- | --- |
 | Capacitor 的 iOS 服务对 `.atlas` / `.skel` 给了错的 `Content-Type`，pixi 的加载器因此不走文本/字节 | 不是 mime 判断：`public/vendor/pixi-spine.js` 里两个解析扩展按**扩展名**匹配 —— `test(c){return checkExtension(c,".atlas")}` 且 `load` 是 `(await settings.ADAPTER.fetch(c)).text()`，`.skel` 同理走 `.arrayBuffer()`。服务器回什么 mime 都拿得到正确的字节 |
 | iOS 15 缺 `Object.hasOwn` / `.at` / `findLast` / `structuredClone`，协议层或 UI 层直接抛 | `public/js/ui/compat.js` 在 `main.js` 最前面装好这几个（按能力检测，不按 UA），Safari 15.0–15.3 的缺口是已知并已补的 |
-| `/vendor/three.core.js` 里有 6 处 class static block（要 Safari 16.4），iOS 15 会整块炸白 | 它是**动态** import 且带 `.then(…, () => null)`（`render/board3d/load.js:22`），解析失败就返回 null → 走注释里写明的 2D 棋盘 fallback。而 Spine 单位是 Pixi 画的，不依赖 three —— 所以这条影响棋盘，不影响立绘 |
+| `/vendor/three.core.js` 里有 6 处 class static block（要 Safari 16.4），iOS 15 会整块炸白 | 它是**动态** import 且带 `.then(…, () => null)`（`render/board3d/load.js:22`），解析失败就返回 null → 走注释里写明的 2D 棋盘 fallback。而 Spine 单位是 Pixi 画的，不依赖 three —— 所以这条不影响立绘。⚠️ **但它不是"可接受的降级"**：棋盘就是 3D 层，所以 iOS 15.0–16.3 上**永远没有 3D**，且全程无声 —— 这就是 `docs/IOS-3D.md` 那条 bug，已在打包时降级修掉 |
 
 ipa 的 `Info.plist` 实测：`MinimumOSVersion=15.0`、`CFBundleShortVersionString=0.2.1`、`CFBundleVersion=201`、
 `NSAppTransportSecurity={NSAllowsArbitraryLoads:true}`（自签分发要连各种自签服务器，所以是全放行）。

@@ -54,6 +54,10 @@ function makeGameFixture() {
   write(root, 'public/js/screens/room.js', '// room\n/** Invite link. */\nexport function inviteLink(code) { return `?room=${code}`; }\n');
   write(root, 'public/js/main.js', 'export {};\n');
   write(root, 'public/assets/char/x.png', 'png');
+  // a vendored ES module of the shape three.js ships: an ES2022 class static block, which iOS 15 cannot parse
+  // (tools/safari15-syntax.mjs lowers it on the way into the payload)
+  write(root, 'public/vendor/three.core.js',
+    'class Vector2 {\n\n\tstatic {\n\n\t\tVector2.prototype.isVector2 = true;\n\n\t}\n\n}\n\nexport { Vector2 };\n');
   // data/, shared/, server/
   write(root, 'data/chess.json', '{"a":1}');
   write(root, 'shared/constants.js', "export const PROTOCOL_VERSION = 1;\nexport const APP_VERSION = '0.1.0';\n");
@@ -293,6 +297,13 @@ describe('client payload assembly', () => {
     assert.doesNotThrow(() => assertPatched(out));
     assert.match(readFileSync(path.join(out, 'js', 'net.js'), 'utf8'), /__SP_SERVER__/);
     assert.ok(!readFileSync(path.join(game.root, 'public', 'js', 'net.js'), 'utf8').includes('__SP_SERVER__'), 'the checkout is never modified');
+    // a vendored ES module is lowered on the way into the payload (iOS 15 has no class static blocks) — and, like the
+    // patch, only the payload copy is touched
+    const lowered = readFileSync(path.join(out, 'vendor', 'three.core.js'), 'utf8');
+    assert.equal(lowered.includes('static {'), false, 'no ES2022 class static block may reach a payload');
+    assert.match(lowered, /Vector2\.prototype\.isVector2 = true;/);
+    assert.match(readFileSync(path.join(game.root, 'public', 'vendor', 'three.core.js'), 'utf8'), /static \{/,
+      'the checkout keeps the module as it came from npm');
     // manifest.json lands next to www/ for the build scripts
     assert.equal(JSON.parse(readFileSync(path.join(game.root, 'build', 'client', 'manifest.json'), 'utf8')).server, DEFAULT_SERVER);
   });

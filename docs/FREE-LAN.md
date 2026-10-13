@@ -1,6 +1,7 @@
 # FREE-LAN.md — 「一键联机」：玩家之间直连，不经过我们的服务器
 
-> **状态**：桌面端已落地（2026-10-13）。Android 与 iOS 是**已知差距**，§5 逐条说清到哪一步、
+> **状态**：桌面端已发布 v0.2.5-c43。Android 内置 VPN/JNI 正在独立分支开发，尚未真机验收或发版，参见 docs/ANDROID-LAN.md。
+> 已发布 Android APK 仍需外装 EasyTier；iOS 不变。
 > 缺什么、以及为什么。
 > **服务端那半在另一个仓库**：运维仓 `lilyco-42/lain42-stronghold-ops` 的
 > `docs/20-easytier-lan-m1.md`（M1 方案）与 `extensions/sp-lan-directory/`（房间目录服务）。
@@ -239,7 +240,7 @@ curl http://10.126.126.1:5150/healthz   → 真实游戏服 JSON
 |---|---|---|
 | Windows（Electron 壳） | ✅ 已落地 | 无。玩家点一下按钮，Windows 可能要一次管理员权限 |
 | Windows（Tauri 壳） | ✅ 已落地 | 无 |
-| **Android** | ⚠️ **手动可以，一键未做** | 见 §5.1（手动装 EasyTier + 手填 `10.126.126.1:5150` 今天就能连） |
+| **Android（已发布 c43）** | ⚠️ **手动可以，一键未发布** | 见 §5.1（手动装 EasyTier + 手填 `10.126.126.1:5150` 今天就能连） |
 | **iOS** | ⛔ **做不到** | 见 §5.2 |
 
 ### 5.1 Android —— 能做，但和我们现在的分发方式冲突

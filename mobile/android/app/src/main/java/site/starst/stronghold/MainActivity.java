@@ -1,6 +1,9 @@
 package site.starst.stronghold;
 
 import android.app.AlertDialog;
+import android.app.Activity;
+import android.graphics.Bitmap;
+import android.content.Intent;
 import android.net.http.SslError;
 import android.os.Bundle;
 import android.webkit.SslErrorHandler;
@@ -41,6 +44,8 @@ public class MainActivity extends BridgeActivity {
     /** Hosts whose dialog is on screen: further failures wait for it instead of stacking dialogs. */
     private final Set<String> askingCerts = new HashSet<>();
     private JsonExportBridge jsonExportBridge;
+    private StrongholdLanBridge strongholdLanBridge;
+    private volatile boolean lanTrustedPage;
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
@@ -49,6 +54,8 @@ public class MainActivity extends BridgeActivity {
         applyImmersive();
         jsonExportBridge = new JsonExportBridge(this);
         if (bridge != null) bridge.getWebView().addJavascriptInterface(jsonExportBridge, "StrongholdSaveBridge");
+        strongholdLanBridge = new StrongholdLanBridge(this);
+        if (bridge != null) bridge.getWebView().addJavascriptInterface(strongholdLanBridge, "StrongholdLanBridge");
         installCertificatePrompt();
     }
 
@@ -66,7 +73,15 @@ public class MainActivity extends BridgeActivity {
             }
 
             @Override
+            public void onPageStarted(WebView view, String url, Bitmap favicon) {
+                // JavascriptInterface callbacks run off the UI thread; never call WebView.getUrl() there.
+                lanTrustedPage = false;
+                super.onPageStarted(view, url, favicon);
+            }
+
+            @Override
             public void onPageFinished(WebView view, String url) {
+                lanTrustedPage = isLocalCapacitorUrl(url);
                 declinedCerts.clear();
                 super.onPageFinished(view, url);
                 JsonExportBridge.inject(view, getResources(), url);
@@ -107,6 +122,23 @@ public class MainActivity extends BridgeActivity {
             .show();
     }
 
+    /** Only let the packaged Capacitor origin access the VPN bridge. */
+    public boolean isTrustedLanPage() {
+        return lanTrustedPage;
+    }
+
+    private static boolean isLocalCapacitorUrl(String url) {
+        return url != null && (url.equals("https://localhost") || url.startsWith("https://localhost/")
+            || url.equals("http://localhost") || url.startsWith("http://localhost/"));
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == StrongholdLanBridge.VPN_CONSENT_REQUEST && strongholdLanBridge != null) {
+            strongholdLanBridge.onVpnConsentResult(resultCode == Activity.RESULT_OK);
+        }
+    }
     /** A dialog, the keyboard or a swipe can bring the bars back: hide them again whenever the window has focus. */
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {

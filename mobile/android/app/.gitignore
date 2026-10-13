@@ -1,2 +1,5 @@
 /build/*
 !/build/.npmkeep
+
+# Injected from CI SP_LAN_* secrets; never commit VPN credentials.
+src/main/assets/lan-config.json

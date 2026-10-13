@@ -23,6 +23,11 @@ on:
         description: '校验用：payload 内 runtime-config.js 应当指向的服务器'
         required: false
         default: 'sp.lain42.top'
+      android_only:
+        description: '只验证 Android 构建（减少桌面与 iOS runner 消耗）'
+        required: false
+        type: boolean
+        default: false
       expect_app:
         description: '闸门：payload 内 build.json 的 game.app 必须等于此值；留空则要求等于本仓库 package.json 的 version'
         required: false
@@ -39,6 +44,7 @@ env:
 jobs:
   # ---------- Windows 桌面版 ----------
   desktop:
+    if: github.event.inputs.android_only != 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -325,8 +331,52 @@ jobs:
           grep -q "__SP_MEDIA_ALIAS__ = false" "$F" || { echo "flag 没写进去"; exit 1; }
           echo "android: /media alias disabled"
 
+      # IMPORTANT: cap sync copies build/client/www into app/src/main/assets/public.
+      # Patching the payload AFTER cap sync changes no bytes in the APK!
+      - name: Android 选服页接入原生 LAN 桥
+        run: |
+          set -euo pipefail
+          # The v0.2.5-c42 payload predates the LAN module. Its absence is expected,
+          # so create the directory and add the module rather than requiring it.
+          test -f build/client/www/js/shell/picker.js
+          mkdir -p build/client/www/js/shell
+          install -m 0644 shell/lanRooms.js build/client/www/js/shell/lanRooms.js
+          install -m 0644 shell/picker.js build/client/www/js/shell/picker.js
+          grep -q 'StrongholdLanBridge' build/client/www/js/shell/lanRooms.js
+          grep -q "from './lanRooms.js'" build/client/www/js/shell/picker.js
       - name: 同步 web 资源到 Android 工程
         run: cd mobile && npx cap sync android
+
+      # Android 内置 EasyTier：上游 Rust JNI + FFI (arm64-v8a) 直接打进同一个 APK。
+      # 联机密钥只存在 CI secrets，产物会含网络配置（与桌面端一样可被拆包提取）。
+      - name: Android 内置 EasyTier 原生库（Rust JNI / v2.6.4）
+        env:
+          SP_LAN_NETWORK_NAME: ${{ secrets.SP_LAN_NETWORK_NAME }}
+          SP_LAN_NETWORK_SECRET: ${{ secrets.SP_LAN_NETWORK_SECRET }}
+          SP_LAN_PEERS: ${{ secrets.SP_LAN_PEERS }}
+        run: |
+          set -euo pipefail
+          node tools/write-android-lan-config.mjs --require
+          SDK="$ANDROID_HOME"
+          SDKMANAGER=$(find "$SDK/cmdline-tools" -maxdepth 3 -name sdkmanager -type f | sort | tail -1)
+          "$SDKMANAGER" --install "ndk;27.2.12479018"
+          export ANDROID_NDK_HOME="$SDK/ndk/27.2.12479018"
+          rustup toolchain install 1.95 --profile minimal
+          rustup +1.95 target add aarch64-linux-android
+          sudo apt-get update -qq
+          sudo apt-get install -y protobuf-compiler
+          cargo +1.95 install cargo-ndk --locked
+          git clone --depth 1 --branch v2.6.4 https://github.com/EasyTier/EasyTier.git /tmp/easytier-android-jni-source
+          cd /tmp/easytier-android-jni-source
+          cargo +1.95 ndk -t arm64-v8a build --release -p easytier-ffi --locked
+          cargo +1.95 ndk -t arm64-v8a build --release -p easytier-android-jni --locked
+          DEST="$GITHUB_WORKSPACE/mobile/android/app/src/main/jniLibs/arm64-v8a"
+          mkdir -p "$DEST"
+          cp target/aarch64-linux-android/release/libeasytier_ffi.so "$DEST/"
+          cp target/aarch64-linux-android/release/libeasytier_android_jni.so "$DEST/"
+          test -s "$DEST/libeasytier_ffi.so"
+          test -s "$DEST/libeasytier_android_jni.so"
+          echo "EasyTier JNI and FFI built from official pinned v2.6.4"
 
       # release 而不是 debug：debug 包签的是 runner 现生成的一次性钥匙，每个构建都不同，所以玩家覆盖安装必报
       # INSTALL_FAILED_UPDATE_INCOMPATIBLE(-7)「与已安装应用签名不同」。app/build.gradle 在没有固定钥匙时会
@@ -344,6 +394,16 @@ jobs:
           ls -lh "$APK"
           unzip -l "$APK" | grep -E 'assets/public/index.html|assets/public/assets/' | head -5
 
+      - name: APK 内置 EasyTier 真正出厂（闸门）
+        run: |
+          set -euo pipefail
+          APK=mobile/android/app/build/outputs/apk/release/app-release.apk
+          unzip -Z1 "$APK" | grep -Fx 'lib/arm64-v8a/libeasytier_ffi.so'
+          unzip -Z1 "$APK" | grep -Fx 'lib/arm64-v8a/libeasytier_android_jni.so'
+          unzip -Z1 "$APK" | grep -Fx 'assets/lan-config.json'
+          unzip -p "$APK" assets/lan-config.json | node -e 'let s="";process.stdin.on("data",b=>s+=b).on("end",()=>{const c=JSON.parse(s);if(!c.networkName||!c.networkSecret||!Array.isArray(c.peers)||!c.peers.length)process.exit(1);console.log("Android EasyTier 配置完整（已脱敏）")})'
+          unzip -p "$APK" assets/public/js/shell/lanRooms.js | grep -q StrongholdLanBridge
+          echo "APK 中同时含原生 JNI、FFI、非空配置、桥接页面"
       # 「这次和上次是不是同一把钥匙」得是产物校验项，不能只是约定：apksigner 从 APK 里读出签名证书，
       # 与仓库记录的指纹对拍。换钥匙（或误用 debug 钥匙）在这里就红，而不是等玩家装不上才发现。
       - name: APK 签名就是那一把钥匙（闸门）
@@ -384,6 +444,7 @@ jobs:
   # 前面四道闸门与另两个 job 逐字一致（GitHub 的 workflow 不支持 YAML 锚点，所以只能抄；
   # 抄漏一处就是给玩家发一份没把关的包）。
   ios:
+    if: github.event.inputs.android_only != 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4

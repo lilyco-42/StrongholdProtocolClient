@@ -29,6 +29,11 @@ on:
       tauri_run:
         description: 'build-tauri 那次绿过的 run id（安装器）'
         required: true
+      android_only:
+        description: '只发经过 CI 检查的 Android APK，不夹带旧桌面/iOS'
+        required: false
+        type: boolean
+        default: false
       tag:
         description: '要建的 Release tag，例如 v0.2.2-c30（必须还不存在）'
         required: true
@@ -57,6 +62,7 @@ concurrency:
 
 jobs:
   assemble:
+    if: ${{ inputs.android_only != true }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -231,3 +237,102 @@ jobs:
           done < /tmp/urls.tsv
           echo "可匿名下载：$ok/$total"
           test "$ok" -eq "$total" || { echo "有资产取不到 —— 这个 Release 还不算发出去"; exit 1; }
+
+  # Move only the signed Android APK from successful Actions storage
+  # into a public preview release, without downloading it to a developer PC.
+  publish_android:
+    if: ${{ inputs.android_only == true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      BUILD_RUN: ${{ inputs.clients_run }}
+      TAG: ${{ inputs.tag }}
+      DRAFT: ${{ inputs.as_draft }}
+    steps:
+      - name: Verify successful Android build and unused tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$BUILD_RUN" =~ ^[0-9]+$ ]] || { echo "Invalid build run id"; exit 1; }
+          [[ "$TAG" =~ ^v[0-9A-Za-z.-]+$ ]] || { echo "Invalid tag"; exit 1; }
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release already exists: $TAG"; exit 1
+          fi
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            echo "Git tag already exists: $TAG"; exit 1
+          fi
+          RESULT=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN" --jq .conclusion)
+          [ "$RESULT" = success ] || { echo "Android build did not succeed"; exit 1; }
+          SOURCE_SHA=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN" --jq .head_sha)
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          echo "SOURCE_SHA=$SOURCE_SHA" >> "$GITHUB_ENV"
+          echo "Verified successful build $BUILD_RUN at $SOURCE_SHA"
+
+      - name: Download and inspect signed Android APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          gh run download "$BUILD_RUN" -n stronghold-android-apk -D out -R "$GITHUB_REPOSITORY"
+          test "$(find out -type f | wc -l)" -eq 1
+          test -s out/app-release.apk
+          test "$(stat -c %s out/app-release.apk)" -gt 1000000
+          for entry in lib/arm64-v8a/libeasytier_ffi.so \
+                       lib/arm64-v8a/libeasytier_android_jni.so \
+                       assets/lan-config.json \
+                       assets/public/js/shell/lanRooms.js; do
+            unzip -Z1 out/app-release.apk | grep -Fx "$entry"
+          done
+          unzip -p out/app-release.apk assets/lan-config.json | node -e '
+            let s="";process.stdin.on("data",b=>s+=b).on("end",()=>{
+              const c=JSON.parse(s);
+              if(!c.networkName||!c.networkSecret||!Array.isArray(c.peers)||!c.peers.length)process.exit(1);
+              console.log("Embedded LAN config verified (secret redacted)");
+            });'
+          ASSET="Stronghold-${TAG#v}-android-arm64.apk"
+          mv out/app-release.apk "$ASSET"
+          echo "ASSET=$ASSET" >> "$GITHUB_ENV"
+          printf 'SHA256=%s\n' "$(sha256sum "$ASSET" | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          ls -lh "$ASSET"
+
+      - name: Publish Android preview with verified SHA256
+        shell: bash
+        run: |
+          set -euo pipefail
+          NOTES=$(mktemp)
+          cat > "$NOTES" <<'RELEASE_NOTES'
+          ## Android 内置 EasyTier · ARM64 预览版
+
+          **仅 Android arm64-v8a APK。Windows / iOS 用户请继续使用正式版 v0.2.5-c44。**
+
+          - 集成 EasyTier v2.6.4 Rust JNI/FFI，不需 root 或另外安装 EasyTier
+          - Android VpnService 必须经用户授予 VPN 权限，仅路由 10.126.126.0/24
+          - 已修复 collectNetworkInfos JNI 签名与官方 Rust v2.6.4 实现不一致
+          - Java JNI 6 项接口验证、Kotlin→Java JNI 6 项互操作验证通过
+          - JavaScript 测试 267 项通过、1 项跳过、0 项失败
+          - Android Release CI：原生库编译、APK 内容、配置与签名验证通过
+          - [Android 构建 #38442690392](https://github.com/lilyco-42/StrongholdProtocolClient/actions/runs/38442690392)
+          - [源码 PR #14](https://github.com/lilyco-42/StrongholdProtocolClient/pull/14) · [EasyTier v2.6.4](https://github.com/EasyTier/EasyTier/releases/tag/v2.6.4)
+
+          **预览风险：尚未在 Android 真机验证 VPN 授权、真实联网/联机、断网恢复、覆盖安装。** Android 同时只能运行一个 VPN；共享网络口令可从 APK 提取。本包不是稳定版。
+          RELEASE_NOTES
+          gh release create "$TAG" --draft --prerelease --latest=false \
+            --target "$SOURCE_SHA" \
+            --title "卫戍协议 Android EasyTier ARM64 预览 $TAG" \
+            --notes-file "$NOTES" -R "$GITHUB_REPOSITORY"
+          gh release upload "$TAG" "$ASSET" -R "$GITHUB_REPOSITORY"
+          REMOTE=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets \
+            --jq '.assets[0].digest | sub("^sha256:";"")')
+          [ "$SHA256" = "$REMOTE" ] || { echo "SHA256 mismatch"; exit 1; }
+          COUNT=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets --jq '.assets|length')
+          [ "$COUNT" -eq 1 ] || { echo "Expected exactly one APK asset"; exit 1; }
+          echo "Verified uploaded APK SHA256=$REMOTE"
+          if [ "$DRAFT" = no ]; then
+            gh release edit "$TAG" --draft=false -R "$GITHUB_REPOSITORY"
+          fi
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json url,isDraft,isPrerelease,assets \
+            --jq '{url,isDraft,isPrerelease,assets:[.assets[]|{name,size,digest,url}]}'

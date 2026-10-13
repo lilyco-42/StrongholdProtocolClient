@@ -10,7 +10,7 @@
 //
 // Three rules, deliberately the same ones docs/SERVER-LIST.md pins for the other discovery channel:
 //
-//   P1  A missing endpoint is NORMAL. The browser build, the Android WebView and iOS have no shell, so /lan/*
+//   P1  A missing endpoint is NORMAL. The browser build, iOS and older Android WebViews have no shell, so /lan/*
 //       answers 404 (or nothing at all) there. That is "this build cannot do LAN play" — not an error, not a
 //       retry, and the section is simply hidden.
 //   P2  Addresses from the directory are re-validated here and never auto-connected. A directory that is
@@ -108,6 +108,13 @@ async function requestJson(url, { method = 'GET', fetchImpl = globalThis.fetch, 
  * Read the sidecar status. null = "no LAN support in this build" (P1) — never throws.
  */
 export async function fetchLanStatus(fetchImpl = globalThis.fetch) {
+  // Packaged Android bridges directly into VpnService/JNI; no fake local HTTP server.
+  if (typeof globalThis.StrongholdLanBridge?.getStatus === 'function') {
+    try {
+      const doc = JSON.parse(globalThis.StrongholdLanBridge.getStatus());
+      return doc && doc.ok === true ? doc : null;
+    } catch { return null; }
+  }
   try {
     const doc = await requestJson(LAN_STATUS_URL, { fetchImpl });
     return doc && doc.ok === true ? doc : null;
@@ -144,6 +151,10 @@ export async function fetchLanRooms(fetchImpl = globalThis.fetch, directoryUrl =
 }
 
 export async function setLanUp(up, fetchImpl = globalThis.fetch) {
+  if (typeof globalThis.StrongholdLanBridge?.setEnabled === 'function') {
+    try { return JSON.parse(globalThis.StrongholdLanBridge.setEnabled(Boolean(up))); }
+    catch { return null; }
+  }
   try {
     return await requestJson(up ? LAN_UP_URL : LAN_DOWN_URL, { method: 'POST', fetchImpl, timeoutMs: 20000 });
   } catch {

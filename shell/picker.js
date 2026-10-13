@@ -599,6 +599,19 @@ function mount() {
     await refreshLan();
     loadList();
     queueRefreshAll();
+    // Android's OS VPN dialog is asynchronous. Refresh while it is establishing
+    // the Rust mesh; otherwise the picker would stay on "正在开启" forever.
+    if (!up && typeof globalThis.StrongholdLanBridge?.getStatus === 'function') {
+      void (async () => {
+        for (let retry = 0; retry < 12 && lanStatus?.state === 'starting'; retry++) {
+          await new Promise((resolve) => setTimeout(resolve, 2500));
+          if (!listEl?.isConnected) break;
+          await refreshLan();
+          loadList();
+          queueRefreshAll();
+        }
+      })();
+    }
   }
 
   /**

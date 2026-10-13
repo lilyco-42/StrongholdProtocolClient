@@ -48,6 +48,19 @@ export const OUTBOUND = [
   /\.open\(\s*["'](?:GET|POST|HEAD|PUT|DELETE)["']\s*,\s*["']((?:https?:)?\/\/[^'"\s]+)/gi,
   /navigator\.sendBeacon\(\s*["']((?:https?:)?\/\/[^'"\s]+)/g,
 ];
+/**
+ * `<a href>` 是**导航**（玩家点了才发生），不是资源加载。闸门按"引用形式"拦 href，分不清
+ * `<a href>` 与 `<link href>` / `<img src>`，所以这里把 `<a>` 的 href 单独摘出来。
+ *
+ * 只对下面这份**确切 URL** 白名单放行 —— 放行整类 href、或放行整个 github.com，闸门就形同虚设了。
+ *
+ * 目前只有一条：上游 0.2.5 在标题页加的「项目仓库」链接（`public/js/screens/title.js`），
+ * 带 `target="_blank" rel="noopener noreferrer"`；不点它不会有任何网络行为，离线启动不受影响。
+ * （0.2.5 的 cut 就是在这里红的：闸门把它当成了"会向站外发请求"。）
+ */
+export const ANCHOR_NAV = /<a\b[^>]*\bhref\s*=\s*["']((?:https?:)?\/\/[^"'\s]+)/gi;
+export const ALLOWED_NAV = new Set(['https://github.com/sganggs/Stronghold-Protocol']);
+
 /** Text formats that can carry a URL. Binary assets (.png/.woff2/.skel/.mp3 …) are not scanned. */
 export const TEXT_EXT = new Set(['.html', '.css', '.js', '.mjs', '.json', '.svg', '.txt', '.atlas', '.csv']);
 export const SHEET = 'webfonts/google/google.css';
@@ -113,7 +126,11 @@ function collectProblems(read, exists, listDir, listSheetUrls, mirrorNames) {
     if (host) problems.push(`${rel} 引用外部字体主机 ${host[0]}`);
     const oss = OSS_HOST.exec(text);
     if (oss) problems.push(`${rel} 引用 CDN 绝对地址 ${oss[0]}（payload 必须用相对清单，否则离线白屏）`);
-    const outbound = [...new Set(OUTBOUND.flatMap((rx) => [...text.matchAll(rx)].map((m) => m[1])))];
+    // 扣掉"点了才发生"的导航链接：必须**同时**是 `<a>` 的 href 且在确切 URL 白名单里。
+    // 只满足一个都仍然拦 —— 这正是白名单不失效的原因（见 ANCHOR_NAV 的说明）。
+    const anchors = new Set([...text.matchAll(ANCHOR_NAV)].map((m) => m[1]));
+    const outbound = [...new Set(OUTBOUND.flatMap((rx) => [...text.matchAll(rx)].map((m) => m[1])))]
+      .filter((u) => !(anchors.has(u) && ALLOWED_NAV.has(u)));
     if (outbound.length) {
       problems.push(`${rel} 会向站外发请求：${outbound[0].slice(0, 96)}` + (outbound.length > 1 ? `（另有 ${outbound.length - 1} 处）` : ''));
     }

@@ -25,7 +25,7 @@ import { DATA_SHIM_JS, SIM_PRIVATE, findGameRoot, isGameRoot, readGameContract, 
 import { PATCHED_FILES, applyPayloadPatch, assertPatched } from '../tools/payload-patches.mjs';
 import { assembleClient, runtimeConfigSource, DEFAULT_SERVER, CLIENT_ROOT, SHELL_FILES, parseCommonArgs } from '../tools/package-client.mjs';
 import { desktopTargets } from '../tools/package-desktop.mjs';
-import { checkPayloadOffline, checkZipOffline, OUTBOUND } from '../tools/check-payload-offline.mjs';
+import { checkPayloadOffline, checkZipOffline, OUTBOUND, ALLOWED_NAV } from '../tools/check-payload-offline.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -962,6 +962,31 @@ describe('payload offline gate (no third-party host in the boot path)', () => {
     assert.ok(r.problems.some((x) => /^index\.html 引用外部字体主机 fonts\.googleapis\.com/.test(x)), JSON.stringify(r.problems));
     assert.ok(r.problems.some((x) => /会向站外发请求/.test(x)), JSON.stringify(r.problems));
     assert.equal(r.problems.filter((x) => /引用外部字体主机/.test(x)).length, 1, '只有 index.html 该被点名');
+  });
+
+  test('标题页的「项目仓库」超链接不算站外请求，但同一地址当资源加载仍然算', () => {
+    // 上游 0.2.5 在标题页加了一个 `<a href="https://github.com/sganggs/Stronghold-Protocol">` 的「项目仓库」链接，
+    // 而闸门按"引用形式"拦 href（分不清 `<a href>` 与 `<link href>` / `<img src>`）—— 0.2.5 的 cut 就是在这里红的。
+    // 放行条件是「确实是 <a> 的 href」**且**「在确切 URL 白名单里」；下面三条各证明它的一半，
+    // 少任何一条这个白名单就退化成"放行整类 href"或"放行整个 github.com"。
+    const withTitle = (line) => {
+      const root = make();
+      mkdirSync(path.join(root, 'js', 'screens'), { recursive: true });
+      writeFileSync(path.join(root, 'js', 'screens', 'title.js'), line);
+      return checkPayloadOffline(root);
+    };
+    const LINK = 'https://github.com/sganggs/Stronghold-Protocol';
+
+    const ok = withTitle(`export const T = () => \`<a class="title-repo" href="${LINK}" target="_blank" rel="noopener noreferrer">项目仓库</a>\`;\n`);
+    assert.deepEqual(ok.problems, [], '玩家点了才跳转的项目链接不该被拦');
+
+    const asScript = withTitle(`export const T = () => \`<script src="${LINK}"></script>\`;\n`);
+    assert.match(asScript.problems.join('\n'), /会向站外发请求/, '同一个地址当脚本加载必须拦 —— 白名单不是按 URL 无脑放行');
+
+    const otherSite = withTitle('export const T = () => `<a href="https://github.com/evil/thing">x</a>`;\n');
+    assert.match(otherSite.problems.join('\n'), /会向站外发请求/, '别的地址的 <a> 必须拦 —— 白名单不是放行整类 href');
+
+    assert.equal(ALLOWED_NAV.size, 1, '白名单只该有这一条；加新条目要同时改 tools 里的注释与这条断言');
   });
 
   test('a CDN-absolute manifest fails (offline play is the point of an exe/apk)', () => {

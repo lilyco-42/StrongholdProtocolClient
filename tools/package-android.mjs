@@ -52,6 +52,19 @@ function ensureCleartext() {
   console.log('package-android: 已在 AndroidManifest.xml 打开 usesCleartextTraffic（供局域网 ws:// 服务器）');
 }
 
+/**
+ * WebGL 走 WebView 的 GPU 路径：硬件加速被关掉时 `getContext('webgl')` 直接返回 null，
+ * 游戏就静默掉进「简化视图」（玩家只看到一句「渲染器暂时未能加载」，不知道该怎么办）。
+ * Android 上 `<application>` 的默认值按 targetSdk 推断，国内 ROM / 省电模式有被关掉的情况，
+ * 这里显式打开，保证 WebView 至少有机会拿到 WebGL。同样要在 `cap add android` 之后重新打补丁。
+ */
+function ensureHardwareAccel() {
+  const src = fs.readFileSync(MANIFEST, 'utf8');
+  if (src.includes('hardwareAccelerated')) return;
+  fs.writeFileSync(MANIFEST, src.replace(/(<application\b)/, '$1\n        android:hardwareAccelerated="true"'));
+  console.log('package-android: 已在 AndroidManifest.xml 打开 hardwareAccelerated（WebView 需要它才有 WebGL）');
+}
+
 const o = parseCommonArgs(process.argv.slice(2));
 if (o.help) {
   console.log('usage: node tools/package-android.mjs [--server <address>] [--game <checkout>] [--release] [--skip-install]');
@@ -71,6 +84,7 @@ if (!fs.existsSync(ANDROID)) {
   run(process.execPath, [cli, 'add', 'android'], MOBILE);
 }
 ensureCleartext();
+ensureHardwareAccel();
 
 const sdk = sdkDir();
 if (!sdk) throw new Error('找不到 Android SDK —— 设置 ANDROID_HOME（见 docs/PACKAGING.md）');

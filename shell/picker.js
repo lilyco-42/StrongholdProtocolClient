@@ -863,3 +863,47 @@ globalThis.addEventListener?.('keydown', (ev) => {
   ev.preventDefault();
   showPicker();
 });
+
+/* ------------------------------------------------------------- WebGL 能力探测 ---- */
+/**
+ * 渲染引擎（Pixi 7）需要 WebGL：拿不到上下文时 `fieldHost` 会静默换成 DOM 简化视图，
+ * 玩家只看到一句「渲染器暂时未能加载，已切换为简化视图」，既不知道原因也不知道怎么办。
+ * 本模块在 /js/main.js 之前加载，所以在进游戏之前先探一次：
+ *   - 完全没 WebGL（老 WebView / 硬件加速被关 / GPU 在驱动黑名单里）→ 明确提示去更新 System WebView；
+ *   - 只有 WebGL1 → 3D 棋盘会自动降成 2D 棋盘，玩法不受影响，不必打扰玩家（只记进 __SP_WEBGL__）。
+ * 三端同一份实现；桌面 WebView2 和现代浏览器基本不会命中第一条。
+ */
+function webglKind() {
+  try {
+    const c = globalThis.document?.createElement?.('canvas');
+    if (!c || typeof c.getContext !== 'function') return 'none';
+    if (c.getContext('webgl2')) return 'webgl2';
+    if (c.getContext('webgl') || c.getContext('experimental-webgl')) return 'webgl1';
+  } catch { /* ignore */ }
+  return 'none';
+}
+
+function warnNoWebgl() {
+  const doc = globalThis.document;
+  if (!doc || !doc.body || doc.getElementById('sp-nowebgl')) return;
+  const box = doc.createElement('div');
+  box.id = 'sp-nowebgl';
+  box.setAttribute('role', 'alert');
+  box.style.cssText = [
+    'position:fixed', 'left:50%', 'top:0', 'transform:translateX(-50%)', 'z-index:2147483647',
+    'max-width:min(92vw,34rem)', 'margin:.5rem 0 0', 'padding:.7rem .9rem',
+    'background:#3a1f1f', 'color:#ffd9d9', 'border:1px solid #a45858', 'border-radius:.5rem',
+    'font:500 13px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif',
+    'box-shadow:0 .35rem 1rem rgba(0,0,0,.45)'
+  ].join(';');
+  box.textContent = '本设备的浏览器内核不支持 WebGL，游戏画面会退回简化视图（玩法不受影响）。'
+    + '安卓请到应用商店 / Google Play 更新「Android System WebView」和「Chrome」，然后重启本应用。';
+  doc.body.appendChild(box);
+}
+
+const __gl = webglKind();
+globalThis.__SP_WEBGL__ = __gl;
+if (__gl === 'none') {
+  if (globalThis.document?.body) warnNoWebgl();
+  else globalThis.document?.addEventListener?.('DOMContentLoaded', warnNoWebgl, { once: true });
+}

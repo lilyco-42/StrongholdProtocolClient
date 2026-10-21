@@ -1,9 +1,14 @@
-# publish-release.yml — 把已有构建 run 的产物直接发成 GitHub Release。
+# publish-release.yml — 把已有构建 run 的产物直接发成 GitHub Release，并镜像到夸克网盘。
 #
 # 为什么要有这个文件：产物在 GitHub 的 artifact 存储里，本地 `gh run download` 再
 # `gh release upload` 要把 ~8 GB 搬下再搬上（跨境链路实测极慢）。这里用
 # actions/download-artifact 的跨 run 下载（run-id），让 GitHub 内网完成搬运，
 # 再按 c5x 的命名约定改名后发布。零本地传输。
+#
+# 夸克镜像：产物在同一 runner 的 out/ 里，顺手用 quarkpan 上传到
+#   GitHub-Releases/lilyco/<TAG>
+# （quarkpan 走官方 API 动态分桶，支持秒传/断点续传，比本地那个写死死桶的
+#  v1.0.0 脚本靠谱）。cookie 来自仓库 Secret QUARK_COOKIE；没配就跳过，不影响 Release。
 #
 # 用法（workflow_dispatch）：
 #   gh workflow run publish-release.yml \
@@ -32,6 +37,10 @@ on:
         description: 'Release 说明'
         required: false
         default: '内置 EasyTier 虚拟局域网（免服务器联机）。修复：房间列表不显示（directoryUrl 空串）。'
+      quark_parent_fid:
+        description: '夸克网盘父目录 fid（默认 lilyco：f495ae415d644980985b3e7ce3838b71）'
+        required: false
+        default: 'f495ae415d644980985b3e7ce3838b71'
 
 permissions:
   contents: write
@@ -111,3 +120,76 @@ jobs:
           fi
           echo "=== 完成 ==="
           gh release view "$TAG" --json url,assets --jq '"\(.url)", (.assets[] | "  \(.name) | \(.size)")'
+
+      # ---------- 夸克网盘镜像（复用上面 out/，省一次跨境搬运） ----------
+      - name: 缓存 quarkpan 二进制
+        id: qp
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/quarkpan
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-quarkpan-0.4.0
+
+      - name: 安装 Rust 工具链（仅缓存未命中时）
+        if: steps.qp.outputs.cache-hit != 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 安装系统依赖与 quarkpan（仅缓存未命中时）
+        if: steps.qp.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev
+          cargo install quarkpan --version 0.4.0
+
+      - name: 将 cargo bin 加入 PATH
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: 上传到夸克网盘（GitHub-Releases/lilyco/<TAG>）
+        if: ${{ secrets.QUARK_COOKIE != '' }}
+        env:
+          QUARK_COOKIE: ${{ secrets.QUARK_COOKIE }}
+          QUARK_PARENT: ${{ inputs.quark_parent_fid }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          QUARKPARENT="${QUARK_PARENT:-f495ae415d644980985b3e7ce3838b71}"
+          echo "夸克父目录 (lilyco) fid: $QUARKPARENT"
+          quarkpan --version
+
+          # 找已有 <TAG> 文件夹，没有就建
+          TAG_FID=$(quarkpan list --pdir-fid "$QUARKPARENT" --all --long 2>/dev/null \
+                      | awk -v t="$TAG" '$NF==t {print $(NF-1)}')
+          if [ -z "$TAG_FID" ]; then
+            echo "创建文件夹 $TAG ..."
+            OUT=$(quarkpan folder create --file-name "$TAG" --pdir-fid "$QUARKPARENT" 2>&1)
+            echo "$OUT"
+            TAG_FID=$(echo "$OUT" | grep -oE 'folder created: [0-9a-f]+' | awk '{print $3}')
+            [ -n "$TAG_FID" ] || { echo "无法解析 $TAG 文件夹 fid"; exit 1; }
+          else
+            echo "已存在文件夹 $TAG -> $TAG_FID"
+          fi
+
+          shopt -s nullglob
+          files=(out/*)
+          [ ${#files[@]} -gt 0 ] || { echo "out/ 为空，跳过夸克上传"; exit 0; }
+
+          fail=0
+          for f in "${files[@]}"; do
+            [ -f "$f" ] || continue
+            sz=$(du -m "$f" | cut -f1)
+            echo "--- 上传 $f (${sz} MB)"
+            if quarkpan upload --file "$f" --pdir-fid "$TAG_FID" -c -o > /tmp/up.log 2>&1; then
+              tail -c 2000 /tmp/up.log
+              echo "  ✓ $f"
+            else
+              tail -c 2000 /tmp/up.log
+              echo "  ✗ $f 上传失败（继续其余文件）"
+              fail=1
+            fi
+          done
+
+          echo "=== 夸克上传完成：$TAG ==="
+          quarkpan list --pdir-fid "$TAG_FID" --all --long
+          [ "$fail" -eq 0 ] || echo "::warning::部分文件上传到夸克失败，请检查日志"
